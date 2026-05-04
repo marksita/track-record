@@ -26,18 +26,14 @@ RSS_FEEDS = {
 }
 
 GOOGLE_SOURCE = "Google News"
-ALL_SOURCES = list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE]
 
-st.markdown(f"**Sources used:** {', '.join(ALL_SOURCES)}")
+st.markdown(f"**Sources used:** {', '.join(list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE])}")
 
 # ==================== COUNTRY ====================
 COUNTRY_KEYWORDS = {
     "USA": ["us", "usa", "california", "new york"],
     "UK": ["uk", "britain", "london"],
     "Australia": ["australia", "sydney", "melbourne"],
-    "India": ["india", "bangalore", "delhi"],
-    "Canada": ["canada", "toronto"],
-    "Europe": ["germany", "france", "spain", "eu"]
 }
 
 SOURCE_COUNTRY_MAP = {
@@ -71,7 +67,32 @@ def fetch_article_text(url):
     except:
         return ""
 
+# ==================== FILTERS ====================
+def is_relevant_article(text):
+    text = text.lower()
+    keywords = [
+        "startup", "raises", "funding", "venture",
+        "invests", "backed", "founded", "launches",
+        "seed", "series a", "series b"
+    ]
+    return any(k in text for k in keywords)
+
+def strong_startup_signal(text):
+    text = text.lower()
+    signals = ["raises", "funding", "seed", "series", "valuation"]
+    return any(s in text for s in signals)
+
 # ==================== EXTRACTION ====================
+BAD_ENTITIES = {
+    "Federal Budget", "Small Business", "Labor Party",
+    "Government", "Prime Minister"
+}
+
+BAD_COMPANIES = {
+    "Budget", "Government", "Labor", "Policy",
+    "Australia", "Startup", "Company"
+}
+
 def extract_entrepreneur(text):
     patterns = [
         r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(founded|launched|started)',
@@ -84,13 +105,14 @@ def extract_entrepreneur(text):
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            return match.group(1)
+            name = match.group(1)
+            if name not in BAD_ENTITIES:
+                return name
 
     candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    blacklist = {"Google News", "Tech Crunch", "Business Insider"}
 
     for name in candidates:
-        if name not in blacklist:
+        if name not in BAD_ENTITIES:
             return name
 
     return None
@@ -105,12 +127,16 @@ def extract_company(text):
         match = re.search(pattern, text)
         if match:
             company = match.group(1)
-            if company.lower() not in ["startup", "company", "firm"]:
+            if company not in BAD_COMPANIES:
                 return company
 
-    # fallback
     fallback = re.findall(r'([A-Z][A-Za-z0-9&\-]{3,})', text)
-    return fallback[0] if fallback else None
+
+    for c in fallback:
+        if c not in BAD_COMPANIES:
+            return c
+
+    return None
 
 def detect_role(text):
     text = text.lower()
@@ -131,7 +157,7 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
 
 country_filter = st.sidebar.selectbox(
     "Filter by Country",
-    ["All"] + list(COUNTRY_KEYWORDS.keys())
+    ["All", "Australia", "USA", "UK"]
 )
 
 # ==================== MAIN ====================
@@ -142,8 +168,7 @@ if st.button("🚀 Run Discovery"):
         "Australian startup raises",
         "Sydney startup funding",
         "Melbourne startup founder",
-        "Australia venture capital invests",
-        "Australian startup launched"
+        "Australia venture capital invests"
     ]
 
     results = []
@@ -160,10 +185,15 @@ if st.button("🚀 Run Discovery"):
         article = fetch_article_text(entry.link)
         text = clean + " " + article
 
+        # 🔥 NEW: relevance filters
+        if not is_relevant_article(text):
+            return
+        if not strong_startup_signal(text):
+            return
+
         entrepreneur = extract_entrepreneur(text)
         company = extract_company(text)
 
-        # ❌ HARD FILTER UNKNOWN
         if not entrepreneur or not company:
             return
 
@@ -205,7 +235,7 @@ if st.button("🚀 Run Discovery"):
 
         df = df.sort_values(by="Score", ascending=False)
 
-        st.success(f"✅ Found {len(df)} results")
+        st.success(f"✅ Found {len(df)} high-quality results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
@@ -223,4 +253,4 @@ if st.button("🚀 Run Discovery"):
         )
 
     else:
-        st.error("No high-quality results found")
+        st.error("No high-quality startup results found")
