@@ -7,9 +7,9 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Industry Search • Better Company Detection • Daily Alerts**")
+st.markdown("**Industry Search • Improved Company Detection**")
 
-# ==================== Top ~100 Entrepreneurs ====================
+# ==================== Entrepreneurs Database ====================
 ALL_ENTREPRENEURS = {
     "Elon Musk": ["elonmusk", "xAI", "Tesla", "SpaceX", "Neuralink"],
     "Sam Altman": ["sama", "OpenAI"],
@@ -27,14 +27,8 @@ ALL_ENTREPRENEURS = {
     "Alex Karp": ["palantir"],
     "Patrick Collison": ["patrickc", "Stripe"],
     "Brian Chesky": ["bchesky", "Airbnb"],
-    "Alexis Ohanian": ["alexisohanian"],
     "Vinod Khosla": ["vkhosla"],
     "Dario Amodei": ["darioamodei", "Anthropic"],
-    "Nat Friedman": ["natfriedman"],
-    "Sarah Guo": ["sarahguo"],
-    "Elad Gil": ["eladgil"],
-    "Palmer Luckey": ["PalmerLuckey"],
-    "Joe Lonsdale": ["jlonsdale"],
     "Jensen Huang": ["JensenHuang"],
     "Jeff Bezos": ["JeffBezos"],
 }
@@ -42,17 +36,16 @@ ALL_ENTREPRENEURS = {
 # ==================== Industries ====================
 INDUSTRIES = {
     "All Industries": ALL_ENTREPRENEURS,
-    "AI / Deep Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Sam Altman", "Marc Andreessen", "Alex Karp", "Dario Amodei", "Nat Friedman"]},
+    "AI / Deep Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Sam Altman", "Marc Andreessen", "Alex Karp", "Dario Amodei"]},
     "Fintech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Mark Cuban", "Chamath Palihapitiya", "David Sacks", "Patrick Collison"]},
     "Biotech / Health": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Sam Altman", "Vinod Khosla", "Dario Amodei"]},
     "Cleantech / Climate": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Vinod Khosla", "Jeff Bezos"]},
     "Agritech / Food Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Vinod Khosla", "Elon Musk"]},
     "LegalTech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Peter Thiel", "Marc Andreessen", "David Sacks"]},
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
-    "Defense / Space": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Peter Thiel", "Palmer Luckey"]},
 }
 
-# ==================== Improved Company Extraction ====================
+# ==================== Company Name Extraction ====================
 def clean_google_title(title):
     if " - " in title:
         return title.rsplit(" - ", 1)[0].strip()
@@ -65,9 +58,9 @@ def extract_company_name(title):
     clean_title = clean_google_title(title)
     
     patterns = [
-        r'([A-Z][A-Za-z0-9\s&\'\.-]+?)\s+(?:raises|secures|announces|launches|unveils|debuts|gets funding)',
-        r'(?:invests? in|backs?|acquires?|leads? investment in)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s|$)',
-        r'^([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)(?:\s+raises|\s+announces|\s+launches)',
+        r'([A-Z][A-Za-z0-9\s&\'\.-]+?)\s+(?:raises|secures|announces|launches|unveils|debuts)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s|$)',
+        r'^([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)\s+(?:raises|announces|launches)',
     ]
     
     for pattern in patterns:
@@ -75,10 +68,10 @@ def extract_company_name(title):
         if match:
             company = match.group(1).strip()
             company = re.sub(r'\s+(Inc|LLC|Corp|Ltd|PLC|NV|SA)$', '', company, flags=re.IGNORECASE)
-            if 3 <= len(company) <= 48:
+            if len(company) >= 3 and len(company) <= 50:
                 return company.title()
     
-    # Final fallback
+    # Fallback
     fallback = re.search(r'([A-Z][A-Za-z0-9\s&\'\.-]{5,40})', clean_title)
     if fallback:
         return fallback.group(1).strip().title()
@@ -97,7 +90,7 @@ def fetch_google_news(query, days=30):
         feed = feedparser.parse(rss_url)
         results = []
         for entry in feed.entries[:8]:
-            title = entry.title
+            title = entry.title or ""
             company = extract_company_name(title)
             
             results.append({
@@ -120,7 +113,7 @@ if mode == "Predefined Industry":
     selected_industry = st.sidebar.selectbox("Select Industry", options=list(INDUSTRIES.keys()))
     industry_ents = INDUSTRIES[selected_industry]
 else:
-    custom_query = st.sidebar.text_input("Custom industry or keyword", placeholder="quantum computing, ev battery, vertical ai")
+    custom_query = st.sidebar.text_input("Custom industry or keyword", placeholder="quantum computing, ev battery...")
     selected_industry = custom_query if custom_query else "Custom Search"
     industry_ents = ALL_ENTREPRENEURS
 
@@ -132,7 +125,7 @@ selected_ents = st.sidebar.multiselect(
 
 lookback = st.sidebar.slider("Lookback period (days)", 7, 90, 30)
 
-# ==================== Main Search ====================
+# ==================== Search Button ====================
 if st.button(f"🔍 Search {selected_industry}", type="primary"):
     all_results = []
     progress_bar = st.progress(0)
@@ -161,20 +154,13 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
     
     if all_results:
         df = pd.DataFrame(all_results)
-        st.success(f"✅ Found **{len(df)}** results for **{selected_industry}**")
+        st.success(f"✅ Found **{len(df)}** results")
         st.dataframe(df[["Entrepreneur", "Company", "Description", "Published", "Source"]], use_container_width=True)
         
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
+    else:
+        st.warning("No results found. Try increasing the lookback period.")
 
-# Email Subscription
 st.divider()
-st.subheader("📧 Daily Email Updates")
-col1, col2 = st.columns([3, 2])
-with col1:
-    email = st.text_input("Your Email Address", placeholder="you@example.com")
-with col2:
-    if st.button("Subscribe to Daily Alerts", type="primary") and email:
-        st.success(f"✅ {email} subscribed!")
-
-st.caption("💡 Company name detection improved • Test with AI / Deep Tech")
+st.caption("💡 Company name detection improved • Report any 'Unknown Company' examples")
