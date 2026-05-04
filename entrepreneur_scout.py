@@ -6,18 +6,41 @@ import urllib.parse
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout")
-st.markdown("Discover entrepreneurs **starting or investing in companies**")
+
+# ==================== SOURCES ====================
+RSS_FEEDS = {
+    "TechCrunch": "https://techcrunch.com/feed/",
+    "VentureBeat": "https://venturebeat.com/feed/",
+    "Crunchbase News": "https://news.crunchbase.com/feed/",
+}
+
+GOOGLE_SOURCE = "Google News"
+ALL_SOURCES = list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE]
+
+st.markdown(f"**Sources used:** {', '.join(ALL_SOURCES)}")
+
+# ==================== COUNTRY DETECTION ====================
+COUNTRY_KEYWORDS = {
+    "USA": ["us", "usa", "california", "new york", "silicon valley"],
+    "UK": ["uk", "britain", "london"],
+    "Australia": ["australia", "sydney", "melbourne"],
+    "India": ["india", "bangalore", "delhi"],
+    "Canada": ["canada", "toronto", "vancouver"],
+    "Europe": ["germany", "france", "spain", "eu", "europe"]
+}
+
+def detect_country(text):
+    text_lower = text.lower()
+    for country, keywords in COUNTRY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return country
+    return "Unknown"
 
 # ==================== CONFIG ====================
 KNOWN_COMPANIES = {
     "tesla", "spacex", "xai", "openai",
     "anthropic", "stripe", "airbnb", "palantir"
-}
-
-RSS_FEEDS = {
-    "TechCrunch": "https://techcrunch.com/feed/",
-    "VentureBeat": "https://venturebeat.com/feed/",
-    "Crunchbase": "https://news.crunchbase.com/feed/",
 }
 
 # ==================== HELPERS ====================
@@ -27,12 +50,10 @@ def clean_title(title):
 def extract_company(title):
     clean = clean_title(title).lower()
 
-    # Known companies
     for c in KNOWN_COMPANIES:
         if c in clean:
             return c.title()
 
-    # Funding / launch patterns
     patterns = [
         r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches|unveils)',
         r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})'
@@ -42,10 +63,8 @@ def extract_company(title):
         match = re.search(pattern, title)
         if match:
             company = match.group(1)
-
             if company.lower() in ["startup", "company", "firm", "round", "funding"]:
                 continue
-
             return company
 
     return None
@@ -63,7 +82,6 @@ def extract_entrepreneur(text):
         if match:
             return match.group(1)
 
-    # Fallback: first name-like match
     fallback = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
     return fallback[0] if fallback else "Unknown"
 
@@ -77,10 +95,6 @@ def detect_role(text):
 
     return "Mentioned"
 
-def is_high_signal(text):
-    keywords = ["funding", "startup", "raises", "invest", "backed", "launch"]
-    return any(k in text.lower() for k in keywords)
-
 # ==================== FETCH ====================
 def fetch_google_news(query, months):
     encoded = urllib.parse.quote_plus(query)
@@ -88,13 +102,12 @@ def fetch_google_news(query, months):
     return feedparser.parse(url).entries[:15]
 
 # ==================== UI ====================
-sources = st.sidebar.multiselect(
-    "Sources",
-    ["Google News", "TechCrunch", "VentureBeat", "Crunchbase"],
-    default=["Google News", "TechCrunch"]
-)
-
 months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
+
+country_filter = st.sidebar.selectbox(
+    "Filter by Country",
+    ["All"] + list(COUNTRY_KEYWORDS.keys()) + ["Unknown"]
+)
 
 # ==================== MAIN ====================
 if st.button("🚀 Run Discovery"):
@@ -111,17 +124,11 @@ if st.button("🚀 Run Discovery"):
     results = []
     seen = set()
 
-    for source in sources:
-
-        if source == "Google News":
-            entries = []
-            for q in queries:
-                entries += fetch_google_news(q, months)
-        else:
-            entries = feedparser.parse(RSS_FEEDS[source]).entries[:20]
+    # ===== GOOGLE NEWS =====
+    for q in queries:
+        entries = fetch_google_news(q, months)
 
         for entry in entries:
-
             title = entry.title or ""
             clean = clean_title(title)
 
@@ -129,9 +136,38 @@ if st.button("🚀 Run Discovery"):
                 continue
             seen.add(clean)
 
-            # Only keep high-signal articles
-            if not is_high_signal(clean):
+            company = extract_company(title)
+            if company is None:
                 continue
+
+            entrepreneur = extract_entrepreneur(clean)
+            role = detect_role(clean)
+            country = detect_country(clean)
+
+            if country_filter != "All" and country != country_filter:
+                continue
+
+            results.append({
+                "Entrepreneur": entrepreneur,
+                "Role": role,
+                "Company": company,
+                "Title": clean,
+                "Source": GOOGLE_SOURCE,
+                "Country": country,
+                "Link": entry.link
+            })
+
+    # ===== RSS FEEDS =====
+    for source_name, url in RSS_FEEDS.items():
+        entries = feedparser.parse(url).entries[:20]
+
+        for entry in entries:
+            title = entry.title or ""
+            clean = clean_title(title)
+
+            if clean in seen:
+                continue
+            seen.add(clean)
 
             company = extract_company(title)
             if company is None:
@@ -139,12 +175,18 @@ if st.button("🚀 Run Discovery"):
 
             entrepreneur = extract_entrepreneur(clean)
             role = detect_role(clean)
+            country = detect_country(clean)
+
+            if country_filter != "All" and country != country_filter:
+                continue
 
             results.append({
                 "Entrepreneur": entrepreneur,
                 "Role": role,
                 "Company": company,
                 "Title": clean,
+                "Source": source_name,
+                "Country": country,
                 "Link": entry.link
             })
 
@@ -152,18 +194,40 @@ if st.button("🚀 Run Discovery"):
     if results:
         df = pd.DataFrame(results)
 
+        # Remove unknowns for cleaner ranking
+        df = df[df["Entrepreneur"] != "Unknown"]
+
+        # ===== RANKING =====
+        counts = df["Entrepreneur"].value_counts().to_dict()
+        df["Score"] = df["Entrepreneur"].map(counts)
+
+        df = df.sort_values(by="Score", ascending=False)
+
         st.success(f"✅ Found {len(df)} results")
 
+        # ===== LEADERBOARD =====
+        st.subheader("🏆 Top Entrepreneurs")
+
+        top = df.groupby("Entrepreneur")["Score"].max().sort_values(ascending=False).head(10)
+
+        for name, score in top.items():
+            st.markdown(f"**{name}** — 🔥 {score}")
+
+        st.divider()
+
+        # ===== RESULTS =====
         for _, r in df.iterrows():
             with st.container():
                 st.markdown(f"### 🏢 {r['Company']}")
                 st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
+                st.markdown(f"🔥 Score: {r['Score']}")
                 st.markdown(f"📰 {r['Title']}")
+                st.markdown(f"🌍 {r['Country']} | 📡 {r['Source']}")
                 st.markdown(f"[🔗 Read Article]({r['Link']})")
                 st.divider()
 
         csv = df.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "results.csv")
+        st.download_button("📥 Download CSV", csv, "ranked_results.csv")
 
     else:
         st.error("No results found")
