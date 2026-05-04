@@ -7,7 +7,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Company Detection Fixed** (Better for Mark Cuban & others)")
+st.markdown("**Company Detection v4** - Fixed for general news titles")
 
 # ==================== Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -44,7 +44,9 @@ INDUSTRIES = {
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
 }
 
-# ==================== IMPROVED Company Extraction ====================
+# ==================== IMPROVED Company Detection ====================
+KNOWN_COMPANIES = ["Tesla", "SpaceX", "xAI", "Neuralink", "OpenAI", "Anthropic", "Stripe", "Airbnb", "Palantir", "a16z", "Founders Fund", "Y Combinator"]
+
 def clean_google_title(title):
     if " - " in title:
         return title.rsplit(" - ", 1)[0].strip()
@@ -56,28 +58,24 @@ def extract_company_name(title):
     
     clean_title = clean_google_title(title)
     
-    # Better patterns for investment/funding news
+    # Direct match for known big companies
+    for company in KNOWN_COMPANIES:
+        if company.lower() in clean_title.lower():
+            return company
+    
+    # Funding / Action patterns
     patterns = [
-        r'(?:invests? in|backs?|leads?|acquires?|invested in)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)',
-        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|secures|announces|launches|unveils|debuts)',
-        r'^([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|announces|launches)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)',
+        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|secures|announces|launches|unveils)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, clean_title)
         if match:
             company = match.group(1).strip()
-            # Filter out entrepreneur names and very short strings
-            bad_words = ['elon', 'sam', 'mark', 'peter', 'garry', 'david', 'chamath', 'balaji', 'reid', 'jason', 'keith']
+            bad_words = ['elon', 'sam', 'mark', 'peter', 'garry', 'david', 'chamath']
             if len(company) >= 4 and not any(bad in company.lower() for bad in bad_words):
                 return company.title()
-    
-    # Last resort: Look for capitalized words after "in"
-    in_match = re.search(r'\bin\s+([A-Z][A-Za-z0-9\s&\'\.-]{4,40})', clean_title)
-    if in_match:
-        company = in_match.group(1).strip()
-        if len(company) >= 4:
-            return company.title()
     
     return "Unknown Company"
 
@@ -108,7 +106,7 @@ def fetch_google_news(query, days=30):
     except:
         return []
 
-# ==================== UI (unchanged) ====================
+# ==================== UI ====================
 st.sidebar.header("🔎 Search Controls")
 mode = st.sidebar.radio("Search Mode", ["Predefined Industry", "Custom Industry/Keyword"])
 
@@ -163,4 +161,4 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
 
 st.divider()
-st.caption("💡 Company detection improved specifically for investment-style titles")
+st.caption("💡 Now detects Tesla, OpenAI, xAI, etc. even in general news")
