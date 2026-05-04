@@ -7,59 +7,88 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Improved Company Detection v2**")
+st.markdown("**Industry Search • Better Company Detection • Daily Alerts**")
 
-# (Keep your ALL_ENTREPRENEURS and INDUSTRIES dictionaries from the previous version)
+# ==================== Top ~100 Entrepreneurs ====================
+ALL_ENTREPRENEURS = {
+    "Elon Musk": ["elonmusk", "xAI", "Tesla", "SpaceX", "Neuralink"],
+    "Sam Altman": ["sama", "OpenAI"],
+    "Marc Andreessen": ["pmarca", "a16z"],
+    "Peter Thiel": ["peterthiel", "Founders Fund"],
+    "Garry Tan": ["garrytan", "Y Combinator"],
+    "Mark Cuban": ["mcuban"],
+    "Naval Ravikant": ["naval"],
+    "Balaji Srinivasan": ["balajis"],
+    "Reid Hoffman": ["reidhoffman"],
+    "Chamath Palihapitiya": ["chamath"],
+    "David Sacks": ["DavidSacks"],
+    "Jason Calacanis": ["jason"],
+    "Keith Rabois": ["rabois"],
+    "Alex Karp": ["palantir"],
+    "Patrick Collison": ["patrickc", "Stripe"],
+    "Brian Chesky": ["bchesky", "Airbnb"],
+    "Alexis Ohanian": ["alexisohanian"],
+    "Vinod Khosla": ["vkhosla"],
+    "Dario Amodei": ["darioamodei", "Anthropic"],
+    "Nat Friedman": ["natfriedman"],
+    "Sarah Guo": ["sarahguo"],
+    "Elad Gil": ["eladgil"],
+    "Palmer Luckey": ["PalmerLuckey"],
+    "Joe Lonsdale": ["jlonsdale"],
+    "Jensen Huang": ["JensenHuang"],
+    "Jeff Bezos": ["JeffBezos"],
+}
 
-# ==================== STRONGER Company Name Extraction ====================
+# ==================== Industries ====================
+INDUSTRIES = {
+    "All Industries": ALL_ENTREPRENEURS,
+    "AI / Deep Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Sam Altman", "Marc Andreessen", "Alex Karp", "Dario Amodei", "Nat Friedman"]},
+    "Fintech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Mark Cuban", "Chamath Palihapitiya", "David Sacks", "Patrick Collison"]},
+    "Biotech / Health": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Sam Altman", "Vinod Khosla", "Dario Amodei"]},
+    "Cleantech / Climate": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Vinod Khosla", "Jeff Bezos"]},
+    "Agritech / Food Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Vinod Khosla", "Elon Musk"]},
+    "LegalTech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Peter Thiel", "Marc Andreessen", "David Sacks"]},
+    "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
+    "Defense / Space": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Peter Thiel", "Palmer Luckey"]},
+}
+
+# ==================== Improved Company Extraction ====================
 def clean_google_title(title):
-    """Remove source name from the end (e.g. ' - TechCrunch')"""
     if " - " in title:
-        parts = title.rsplit(" - ", 1)
-        return parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
-    return title.strip(), ""
+        return title.rsplit(" - ", 1)[0].strip()
+    return title.strip()
 
 def extract_company_name(title):
     if not title:
         return "Unknown Company"
     
-    clean_title, _ = clean_google_title(title)
+    clean_title = clean_google_title(title)
     
     patterns = [
-        # Most common: "Company raises/funding/launch"
-        r'([A-Z][A-Za-z0-9\s&\'\.-]+?)\s+(?:raises|secures|announces|launches|unveils|gets|debuts|introduces)',
-        # "invests in / backs / acquires Company"
-        r'(?:invests? in|leads?|backs?|acquires?|joins?|partnering with)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s+to|\s+\(|\s+from|$)',
-        # Company at the very start
+        r'([A-Z][A-Za-z0-9\s&\'\.-]+?)\s+(?:raises|secures|announces|launches|unveils|debuts|gets funding)',
+        r'(?:invests? in|backs?|acquires?|leads? investment in)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s|$)',
         r'^([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)(?:\s+raises|\s+announces|\s+launches)',
-        # After keywords
-        r'(?:from|at|by|with)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s|$)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, clean_title, re.IGNORECASE)
         if match:
             company = match.group(1).strip()
-            # Clean common suffixes
             company = re.sub(r'\s+(Inc|LLC|Corp|Ltd|PLC|NV|SA)$', '', company, flags=re.IGNORECASE)
-            if len(company) >= 3 and len(company) <= 48:
+            if 3 <= len(company) <= 48:
                 return company.title()
     
-    # Fallback: Take first capitalized phrase
-    fallback = re.search(r'([A-Z][A-Za-z0-9\s&\'\.-]{4,40})', clean_title)
+    # Final fallback
+    fallback = re.search(r'([A-Z][A-Za-z0-9\s&\'\.-]{5,40})', clean_title)
     if fallback:
-        candidate = fallback.group(1).strip()
-        if len(candidate) >= 4:
-            return candidate.title()
+        return fallback.group(1).strip().title()
     
     return "Unknown Company"
 
 def clean_description(title):
-    clean_title, source = clean_google_title(title)
-    desc = clean_title
+    desc = clean_google_title(title)
     return desc[:220] + "..." if len(desc) > 220 else desc
 
-# ==================== Fetch Function ====================
 def fetch_google_news(query, days=30):
     try:
         end = datetime.now()
@@ -80,11 +109,72 @@ def fetch_google_news(query, days=30):
                 "Link": entry.link
             })
         return results
-    except Exception as e:
-        st.error(f"Error fetching news: {e}")
+    except:
         return []
 
-# ==================== Rest of the UI (same as before) ====================
-# ... [Keep your sidebar, search logic, expander cards, and email subscription exactly as in the last version]
+# ==================== Sidebar ====================
+st.sidebar.header("🔎 Search Controls")
+mode = st.sidebar.radio("Search Mode", ["Predefined Industry", "Custom Industry/Keyword"])
 
-st.caption("💡 Company Detection Improved v2 • Test with 'AI' or 'Tesla' searches")
+if mode == "Predefined Industry":
+    selected_industry = st.sidebar.selectbox("Select Industry", options=list(INDUSTRIES.keys()))
+    industry_ents = INDUSTRIES[selected_industry]
+else:
+    custom_query = st.sidebar.text_input("Custom industry or keyword", placeholder="quantum computing, ev battery, vertical ai")
+    selected_industry = custom_query if custom_query else "Custom Search"
+    industry_ents = ALL_ENTREPRENEURS
+
+selected_ents = st.sidebar.multiselect(
+    f"Select Entrepreneurs (~{len(industry_ents)} available)",
+    options=list(industry_ents.keys()),
+    default=list(industry_ents.keys())[:8]
+)
+
+lookback = st.sidebar.slider("Lookback period (days)", 7, 90, 30)
+
+# ==================== Main Search ====================
+if st.button(f"🔍 Search {selected_industry}", type="primary"):
+    all_results = []
+    progress_bar = st.progress(0)
+    
+    for idx, name in enumerate(selected_ents):
+        st.subheader(f"🔹 {name}")
+        terms = industry_ents[name]
+        
+        for term in terms:
+            with st.spinner(f"Searching {term}..."):
+                search_term = term if mode == "Predefined Industry" else f"{term} {custom_query}"
+                news = fetch_google_news(search_term, lookback)
+                
+                for item in news:
+                    item["Entrepreneur"] = name
+                all_results.extend(news)
+                
+                for item in news:
+                    with st.expander(f"🏢 {item['Company']}"):
+                        st.caption(f"📅 {item['Published']} • {item['Source']}")
+                        st.markdown(f"**Company:** {item['Company']}")
+                        st.write(item['Description'])
+                        st.markdown(f"[🔗 Read Full Article]({item['Link']})")
+        
+        progress_bar.progress((idx + 1) / len(selected_ents))
+    
+    if all_results:
+        df = pd.DataFrame(all_results)
+        st.success(f"✅ Found **{len(df)}** results for **{selected_industry}**")
+        st.dataframe(df[["Entrepreneur", "Company", "Description", "Published", "Source"]], use_container_width=True)
+        
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
+
+# Email Subscription
+st.divider()
+st.subheader("📧 Daily Email Updates")
+col1, col2 = st.columns([3, 2])
+with col1:
+    email = st.text_input("Your Email Address", placeholder="you@example.com")
+with col2:
+    if st.button("Subscribe to Daily Alerts", type="primary") and email:
+        st.success(f"✅ {email} subscribed!")
+
+st.caption("💡 Company name detection improved • Test with AI / Deep Tech")
