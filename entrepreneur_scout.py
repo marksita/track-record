@@ -11,7 +11,6 @@ st.title("🚀 Entrepreneur Scout")
 
 # ==================== SOURCES ====================
 RSS_FEEDS = {
-    # Global
     "TechCrunch": "https://techcrunch.com/feed/",
     "VentureBeat": "https://venturebeat.com/feed/",
     "Crunchbase News": "https://news.crunchbase.com/feed/",
@@ -20,8 +19,6 @@ RSS_FEEDS = {
     "Forbes Tech": "https://www.forbes.com/technology/feed/",
     "Business Insider": "https://www.businessinsider.com/rss",
     "Tech.eu": "https://tech.eu/feed/",
-
-    # 🇦🇺 Australia
     "Startup Daily": "https://www.startupdaily.net/feed/",
     "SmartCompany": "https://www.smartcompany.com.au/feed/",
     "InnovationAus": "https://www.innovationaus.com/feed/",
@@ -35,12 +32,12 @@ st.markdown(f"**Sources used:** {', '.join(ALL_SOURCES)}")
 
 # ==================== COUNTRY ====================
 COUNTRY_KEYWORDS = {
-    "USA": ["us", "usa", "california", "new york", "silicon valley"],
+    "USA": ["us", "usa", "california", "new york"],
     "UK": ["uk", "britain", "london"],
     "Australia": ["australia", "sydney", "melbourne"],
     "India": ["india", "bangalore", "delhi"],
-    "Canada": ["canada", "toronto", "vancouver"],
-    "Europe": ["germany", "france", "spain", "eu", "europe"]
+    "Canada": ["canada", "toronto"],
+    "Europe": ["germany", "france", "spain", "eu"]
 }
 
 SOURCE_COUNTRY_MAP = {
@@ -54,9 +51,8 @@ def detect_country(text, source=None):
     text_lower = text.lower()
 
     for country, keywords in COUNTRY_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                return country
+        if any(k in text_lower for k in keywords):
+            return country
 
     if source in SOURCE_COUNTRY_MAP:
         return SOURCE_COUNTRY_MAP[source]
@@ -69,19 +65,35 @@ def fetch_article_text(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=5)
-
         soup = BeautifulSoup(res.text, "html.parser")
         paragraphs = soup.find_all("p")
-
-        text = " ".join(p.get_text() for p in paragraphs)
-        return text[:3000]
-
+        return " ".join(p.get_text() for p in paragraphs)[:3000]
     except:
         return ""
 
-# ==================== HELPERS ====================
-def clean_title(title):
-    return title.rsplit(" - ", 1)[0].strip() if " - " in title else title.strip()
+# ==================== EXTRACTION ====================
+def extract_entrepreneur(text):
+    patterns = [
+        r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(founded|launched|started)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(CEO|founder|co-founder)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backs|led)',
+        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+
+    candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    blacklist = {"Google News", "Tech Crunch", "Business Insider"}
+
+    for name in candidates:
+        if name not in blacklist:
+            return name
+
+    return None
 
 def extract_company(text):
     patterns = [
@@ -96,32 +108,16 @@ def extract_company(text):
             if company.lower() not in ["startup", "company", "firm"]:
                 return company
 
-    return None
-
-def extract_entrepreneur(text):
-    patterns = [
-        r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(launches|founds|starts)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)',
-        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-
-    fallback = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    return fallback[0] if fallback else "Unknown"
+    # fallback
+    fallback = re.findall(r'([A-Z][A-Za-z0-9&\-]{3,})', text)
+    return fallback[0] if fallback else None
 
 def detect_role(text):
     text = text.lower()
-
     if any(k in text for k in ["founded", "launched", "started"]):
         return "Founder"
     if any(k in text for k in ["invested", "backed", "led"]):
         return "Investor"
-
     return "Mentioned"
 
 # ==================== FETCH ====================
@@ -135,7 +131,7 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
 
 country_filter = st.sidebar.selectbox(
     "Filter by Country",
-    ["All"] + list(COUNTRY_KEYWORDS.keys()) + ["Unknown"]
+    ["All"] + list(COUNTRY_KEYWORDS.keys())
 )
 
 # ==================== MAIN ====================
@@ -153,22 +149,29 @@ if st.button("🚀 Run Discovery"):
     results = []
     seen = set()
 
-    def process_entry(entry, source_name):
+    def process(entry, source):
         title = entry.title or ""
-        clean = clean_title(title)
+        clean = title.split(" - ")[0].strip()
 
         if clean in seen:
             return
         seen.add(clean)
 
-        article_text = fetch_article_text(entry.link)
+        article = fetch_article_text(entry.link)
+        text = clean + " " + article
 
-        combined = clean + " " + article_text
+        entrepreneur = extract_entrepreneur(text)
+        company = extract_company(text)
 
-        entrepreneur = extract_entrepreneur(combined)
-        company = extract_company(combined) or "Unknown"
-        role = detect_role(combined)
-        country = detect_country(combined, source_name)
+        # ❌ HARD FILTER UNKNOWN
+        if not entrepreneur or not company:
+            return
+
+        if len(entrepreneur.split()) != 2:
+            return
+
+        role = detect_role(text)
+        country = detect_country(text, source)
 
         if country_filter != "All" and country != country_filter:
             return
@@ -178,22 +181,20 @@ if st.button("🚀 Run Discovery"):
             "Role": role,
             "Company": company,
             "Title": clean,
-            "Source": source_name,
+            "Source": source,
             "Country": country,
             "Link": entry.link
         })
 
     # Google
     for q in queries:
-        entries = fetch_google_news(q, months)
-        for e in entries:
-            process_entry(e, GOOGLE_SOURCE)
+        for e in fetch_google_news(q, months):
+            process(e, GOOGLE_SOURCE)
 
     # RSS
-    for source_name, url in RSS_FEEDS.items():
-        entries = feedparser.parse(url).entries[:20]
-        for e in entries:
-            process_entry(e, source_name)
+    for source, url in RSS_FEEDS.items():
+        for e in feedparser.parse(url).entries[:20]:
+            process(e, source)
 
     # ==================== DISPLAY ====================
     if results:
@@ -207,17 +208,19 @@ if st.button("🚀 Run Discovery"):
         st.success(f"✅ Found {len(df)} results")
 
         for _, r in df.iterrows():
-            with st.container():
-                st.markdown(f"### 🏢 {r['Company']}")
-                st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
-                st.markdown(f"🔥 Score: {r['Score']}")
-                st.markdown(f"📰 {r['Title']}")
-                st.markdown(f"🌍 {r['Country']} | 📡 {r['Source']}")
-                st.markdown(f"[🔗 Read Article]({r['Link']})")
-                st.divider()
+            st.markdown(f"### 🏢 {r['Company']}")
+            st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
+            st.markdown(f"🔥 Score: {r['Score']}")
+            st.markdown(f"📰 {r['Title']}")
+            st.markdown(f"🌍 {r['Country']} | 📡 {r['Source']}")
+            st.markdown(f"[🔗 Read Article]({r['Link']})")
+            st.divider()
 
-        csv = df.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "results.csv")
+        st.download_button(
+            "📥 Download CSV",
+            df.to_csv(index=False).encode(),
+            "results.csv"
+        )
 
     else:
-        st.error("No results found")
+        st.error("No high-quality results found")
