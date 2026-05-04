@@ -1,4 +1,6 @@
 streamlit
-requests
 feedparser
 pandas
+requests
+newspaper3k
+lxml[html_clean]
