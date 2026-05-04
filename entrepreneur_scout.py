@@ -7,7 +7,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Fixed Company Detection** - Now much more accurate")
+st.markdown("**Company Detection Fixed** (Better for Mark Cuban & others)")
 
 # ==================== Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -44,7 +44,7 @@ INDUSTRIES = {
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
 }
 
-# ==================== STRICTER Company Name Extraction ====================
+# ==================== IMPROVED Company Extraction ====================
 def clean_google_title(title):
     if " - " in title:
         return title.rsplit(" - ", 1)[0].strip()
@@ -56,19 +56,28 @@ def extract_company_name(title):
     
     clean_title = clean_google_title(title)
     
-    # Stronger, more conservative patterns
+    # Better patterns for investment/funding news
     patterns = [
-        r'\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\s+(?:raises|secures|announces|launches|unveils|debuts|introduces)',
-        r'(?:invests? in|backs?|acquires?|leads? funding in)\s+\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b',
-        r'^(?:[A-Z][a-z]+?\s+)?\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b.*?(?:raises|announces|launches)',
+        r'(?:invests? in|backs?|leads?|acquires?|invested in)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)',
+        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|secures|announces|launches|unveils|debuts)',
+        r'^([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|announces|launches)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, clean_title)
         if match:
             company = match.group(1).strip()
-            if len(company) >= 3 and len(company) <= 45 and not any(word in company.lower() for word in ['elon', 'sam', 'mark', 'peter', 'garry']):
+            # Filter out entrepreneur names and very short strings
+            bad_words = ['elon', 'sam', 'mark', 'peter', 'garry', 'david', 'chamath', 'balaji', 'reid', 'jason', 'keith']
+            if len(company) >= 4 and not any(bad in company.lower() for bad in bad_words):
                 return company.title()
+    
+    # Last resort: Look for capitalized words after "in"
+    in_match = re.search(r'\bin\s+([A-Z][A-Za-z0-9\s&\'\.-]{4,40})', clean_title)
+    if in_match:
+        company = in_match.group(1).strip()
+        if len(company) >= 4:
+            return company.title()
     
     return "Unknown Company"
 
@@ -99,7 +108,7 @@ def fetch_google_news(query, days=30):
     except:
         return []
 
-# ==================== UI ====================
+# ==================== UI (unchanged) ====================
 st.sidebar.header("🔎 Search Controls")
 mode = st.sidebar.radio("Search Mode", ["Predefined Industry", "Custom Industry/Keyword"])
 
@@ -154,4 +163,4 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
 
 st.divider()
-st.caption("💡 Company detection tightened - fewer false positives")
+st.caption("💡 Company detection improved specifically for investment-style titles")
