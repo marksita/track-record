@@ -3,6 +3,8 @@ import feedparser
 import pandas as pd
 import re
 import urllib.parse
+import requests
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout")
@@ -31,7 +33,7 @@ ALL_SOURCES = list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE]
 
 st.markdown(f"**Sources used:** {', '.join(ALL_SOURCES)}")
 
-# ==================== COUNTRY DETECTION ====================
+# ==================== COUNTRY ====================
 COUNTRY_KEYWORDS = {
     "USA": ["us", "usa", "california", "new york", "silicon valley"],
     "UK": ["uk", "britain", "london"],
@@ -41,7 +43,6 @@ COUNTRY_KEYWORDS = {
     "Europe": ["germany", "france", "spain", "eu", "europe"]
 }
 
-# NEW: source-based fallback
 SOURCE_COUNTRY_MAP = {
     "Startup Daily": "Australia",
     "SmartCompany": "Australia",
@@ -52,47 +53,48 @@ SOURCE_COUNTRY_MAP = {
 def detect_country(text, source=None):
     text_lower = text.lower()
 
-    # 1. keyword detection
     for country, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
             if keyword in text_lower:
                 return country
 
-    # 2. fallback to source
     if source in SOURCE_COUNTRY_MAP:
         return SOURCE_COUNTRY_MAP[source]
 
     return "Unknown"
 
-# ==================== CONFIG ====================
-KNOWN_COMPANIES = {
-    "tesla", "spacex", "xai", "openai",
-    "anthropic", "stripe", "airbnb", "palantir"
-}
+# ==================== SCRAPING ====================
+@st.cache_data(ttl=3600)
+def fetch_article_text(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=5)
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        paragraphs = soup.find_all("p")
+
+        text = " ".join(p.get_text() for p in paragraphs)
+        return text[:3000]
+
+    except:
+        return ""
 
 # ==================== HELPERS ====================
 def clean_title(title):
     return title.rsplit(" - ", 1)[0].strip() if " - " in title else title.strip()
 
-def extract_company(title):
-    clean = clean_title(title).lower()
-
-    for c in KNOWN_COMPANIES:
-        if c in clean:
-            return c.title()
-
+def extract_company(text):
     patterns = [
         r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches|unveils)',
         r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})'
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, title)
+        match = re.search(pattern, text)
         if match:
             company = match.group(1)
-            if company.lower() in ["startup", "company", "firm", "round", "funding"]:
-                continue
-            return company
+            if company.lower() not in ["startup", "company", "firm"]:
+                return company
 
     return None
 
@@ -124,8 +126,8 @@ def detect_role(text):
 
 # ==================== FETCH ====================
 def fetch_google_news(query, months):
-    encoded = urllib.parse.quote_plus(query)
-    url = f"https://news.google.com/rss/search?q={encoded}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
+    encoded = urllib.parse.quote_plus(query + " Australia")
+    url = f"https://news.google.com/rss/search?q={encoded}+when:{months}m&hl=en-AU&gl=AU&ceid=AU:en"
     return feedparser.parse(url).entries[:15]
 
 # ==================== UI ====================
@@ -140,88 +142,62 @@ country_filter = st.sidebar.selectbox(
 if st.button("🚀 Run Discovery"):
 
     queries = [
-        "startup raises funding",
-        "founded startup",
-        "launched startup",
-        "invested in startup",
-        "backs startup",
-        "led funding round"
+        "startup raises funding Australia",
+        "Australian startup raises",
+        "Sydney startup funding",
+        "Melbourne startup founder",
+        "Australia venture capital invests",
+        "Australian startup launched"
     ]
 
     results = []
     seen = set()
 
-    # ===== GOOGLE NEWS =====
+    def process_entry(entry, source_name):
+        title = entry.title or ""
+        clean = clean_title(title)
+
+        if clean in seen:
+            return
+        seen.add(clean)
+
+        article_text = fetch_article_text(entry.link)
+
+        combined = clean + " " + article_text
+
+        entrepreneur = extract_entrepreneur(combined)
+        company = extract_company(combined) or "Unknown"
+        role = detect_role(combined)
+        country = detect_country(combined, source_name)
+
+        if country_filter != "All" and country != country_filter:
+            return
+
+        results.append({
+            "Entrepreneur": entrepreneur,
+            "Role": role,
+            "Company": company,
+            "Title": clean,
+            "Source": source_name,
+            "Country": country,
+            "Link": entry.link
+        })
+
+    # Google
     for q in queries:
         entries = fetch_google_news(q, months)
+        for e in entries:
+            process_entry(e, GOOGLE_SOURCE)
 
-        for entry in entries:
-            title = entry.title or ""
-            clean = clean_title(title)
-
-            if clean in seen:
-                continue
-            seen.add(clean)
-
-            company = extract_company(title)
-            if company is None:
-                continue
-
-            entrepreneur = extract_entrepreneur(clean)
-            role = detect_role(clean)
-            country = detect_country(clean, GOOGLE_SOURCE)
-
-            if country_filter != "All" and country != country_filter:
-                continue
-
-            results.append({
-                "Entrepreneur": entrepreneur,
-                "Role": role,
-                "Company": company,
-                "Title": clean,
-                "Source": GOOGLE_SOURCE,
-                "Country": country,
-                "Link": entry.link
-            })
-
-    # ===== RSS FEEDS =====
+    # RSS
     for source_name, url in RSS_FEEDS.items():
         entries = feedparser.parse(url).entries[:20]
-
-        for entry in entries:
-            title = entry.title or ""
-            clean = clean_title(title)
-
-            if clean in seen:
-                continue
-            seen.add(clean)
-
-            company = extract_company(title)
-            if company is None:
-                continue
-
-            entrepreneur = extract_entrepreneur(clean)
-            role = detect_role(clean)
-            country = detect_country(clean, source_name)
-
-            if country_filter != "All" and country != country_filter:
-                continue
-
-            results.append({
-                "Entrepreneur": entrepreneur,
-                "Role": role,
-                "Company": company,
-                "Title": clean,
-                "Source": source_name,
-                "Country": country,
-                "Link": entry.link
-            })
+        for e in entries:
+            process_entry(e, source_name)
 
     # ==================== DISPLAY ====================
     if results:
         df = pd.DataFrame(results)
-
-        df = df[df["Entrepreneur"] != "Unknown"]
 
         counts = df["Entrepreneur"].value_counts().to_dict()
         df["Score"] = df["Entrepreneur"].map(counts)
