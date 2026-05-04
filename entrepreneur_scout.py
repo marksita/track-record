@@ -7,7 +7,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Company Detection v5** - Much smarter & cleaner")
+st.markdown("**Only showing results with clear company mentions**")
 
 # ==================== Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -44,11 +44,9 @@ INDUSTRIES = {
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
 }
 
-# ==================== Better Company Detection ====================
-KNOWN_COMPANIES = {
-    "tesla", "spacex", "xai", "neuralink", "openai", "anthropic", "stripe", "airbnb", 
-    "palantir", "founders fund", "y combinator", "a16z"
-}
+# ==================== Company Detection ====================
+KNOWN_COMPANIES = {"tesla", "spacex", "xai", "neuralink", "openai", "anthropic", "stripe", 
+                   "airbnb", "palantir", "founders fund", "y combinator", "a16z"}
 
 def clean_google_title(title):
     if " - " in title:
@@ -57,18 +55,17 @@ def clean_google_title(title):
 
 def extract_company_name(title):
     if not title:
-        return "No Company Mentioned"
+        return None
     
     clean_title = clean_google_title(title).lower()
     
-    # 1. Check for known big companies first
+    # Known big companies
     for company in KNOWN_COMPANIES:
         if company in clean_title:
-            # Return original casing
             orig = re.search(r'(?i)\b' + re.escape(company) + r'\b', title)
             return orig.group(0) if orig else company.title()
     
-    # 2. Funding-style patterns only
+    # Funding / announcement patterns
     patterns = [
         r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)',
         r'([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)\s+(?:raises|secures|announces|launches|unveils)',
@@ -78,10 +75,11 @@ def extract_company_name(title):
         match = re.search(pattern, title)
         if match:
             company = match.group(1).strip()
-            if len(company) >= 4 and company.lower() not in ["elon", "sam", "mark", "chamath", "david", "peter"]:
+            bad_words = ['elon', 'sam', 'mark', 'chamath', 'david', 'peter']
+            if len(company) >= 4 and not any(bad in company.lower() for bad in bad_words):
                 return company.title()
     
-    return "No Company Mentioned"
+    return None  # No company → will be filtered out
 
 def clean_description(title):
     desc = clean_google_title(title)
@@ -98,6 +96,9 @@ def fetch_google_news(query, days=30):
             title = entry.title or ""
             company = extract_company_name(title)
             
+            if company is None:  # Skip results without company
+                continue
+                
             results.append({
                 "Entrepreneur": name,
                 "Company": company,
@@ -142,9 +143,6 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
             with st.spinner(f"Searching {term}..."):
                 search_term = term if mode == "Predefined Industry" else f"{term} {custom_query}"
                 news = fetch_google_news(search_term, lookback)
-                
-                for item in news:
-                    item["Entrepreneur"] = name
                 all_results.extend(news)
                 
                 for item in news:
@@ -158,11 +156,13 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
     
     if all_results:
         df = pd.DataFrame(all_results)
-        st.success(f"✅ Found **{len(df)}** results")
+        st.success(f"✅ Found **{len(df)}** results with company mentions")
         st.dataframe(df[["Entrepreneur", "Company", "Description", "Published", "Source"]], use_container_width=True)
         
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
+    else:
+        st.warning("No results with clear company mentions found. Try a different entrepreneur or longer lookback.")
 
 st.divider()
-st.caption("💡 Now using 'No Company Mentioned' for general/political news")
+st.caption("💡 Only showing results that mention a company")
