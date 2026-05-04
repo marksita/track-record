@@ -7,9 +7,9 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Industry Search • Improved Company Detection**")
+st.markdown("**Fixed Company Detection** - Now much more accurate")
 
-# ==================== Entrepreneurs Database ====================
+# ==================== Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
     "Elon Musk": ["elonmusk", "xAI", "Tesla", "SpaceX", "Neuralink"],
     "Sam Altman": ["sama", "OpenAI"],
@@ -33,7 +33,6 @@ ALL_ENTREPRENEURS = {
     "Jeff Bezos": ["JeffBezos"],
 }
 
-# ==================== Industries ====================
 INDUSTRIES = {
     "All Industries": ALL_ENTREPRENEURS,
     "AI / Deep Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Sam Altman", "Marc Andreessen", "Alex Karp", "Dario Amodei"]},
@@ -45,7 +44,7 @@ INDUSTRIES = {
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
 }
 
-# ==================== Company Name Extraction ====================
+# ==================== STRICTER Company Name Extraction ====================
 def clean_google_title(title):
     if " - " in title:
         return title.rsplit(" - ", 1)[0].strip()
@@ -57,24 +56,19 @@ def extract_company_name(title):
     
     clean_title = clean_google_title(title)
     
+    # Stronger, more conservative patterns
     patterns = [
-        r'([A-Z][A-Za-z0-9\s&\'\.-]+?)\s+(?:raises|secures|announces|launches|unveils|debuts)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]+?)(?:\s|$)',
-        r'^([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)\s+(?:raises|announces|launches)',
+        r'\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\s+(?:raises|secures|announces|launches|unveils|debuts|introduces)',
+        r'(?:invests? in|backs?|acquires?|leads? funding in)\s+\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b',
+        r'^(?:[A-Z][a-z]+?\s+)?\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b.*?(?:raises|announces|launches)',
     ]
     
     for pattern in patterns:
-        match = re.search(pattern, clean_title, re.IGNORECASE)
+        match = re.search(pattern, clean_title)
         if match:
             company = match.group(1).strip()
-            company = re.sub(r'\s+(Inc|LLC|Corp|Ltd|PLC|NV|SA)$', '', company, flags=re.IGNORECASE)
-            if len(company) >= 3 and len(company) <= 50:
+            if len(company) >= 3 and len(company) <= 45 and not any(word in company.lower() for word in ['elon', 'sam', 'mark', 'peter', 'garry']):
                 return company.title()
-    
-    # Fallback
-    fallback = re.search(r'([A-Z][A-Za-z0-9\s&\'\.-]{5,40})', clean_title)
-    if fallback:
-        return fallback.group(1).strip().title()
     
     return "Unknown Company"
 
@@ -105,7 +99,7 @@ def fetch_google_news(query, days=30):
     except:
         return []
 
-# ==================== Sidebar ====================
+# ==================== UI ====================
 st.sidebar.header("🔎 Search Controls")
 mode = st.sidebar.radio("Search Mode", ["Predefined Industry", "Custom Industry/Keyword"])
 
@@ -125,7 +119,6 @@ selected_ents = st.sidebar.multiselect(
 
 lookback = st.sidebar.slider("Lookback period (days)", 7, 90, 30)
 
-# ==================== Search Button ====================
 if st.button(f"🔍 Search {selected_industry}", type="primary"):
     all_results = []
     progress_bar = st.progress(0)
@@ -159,8 +152,6 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
         
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
-    else:
-        st.warning("No results found. Try increasing the lookback period.")
 
 st.divider()
-st.caption("💡 Company name detection improved • Report any 'Unknown Company' examples")
+st.caption("💡 Company detection tightened - fewer false positives")
