@@ -12,6 +12,11 @@ RSS_FEEDS = {
     "TechCrunch": "https://techcrunch.com/feed/",
     "VentureBeat": "https://venturebeat.com/feed/",
     "Crunchbase News": "https://news.crunchbase.com/feed/",
+    "The Verge": "https://www.theverge.com/rss/index.xml",
+    "WIRED": "https://www.wired.com/feed/rss",
+    "Forbes Tech": "https://www.forbes.com/technology/feed/",
+    "Business Insider Tech": "https://www.businessinsider.com/rss",
+    "Tech.eu": "https://tech.eu/feed/",
 }
 
 GOOGLE_SOURCE = "Google News"
@@ -194,10 +199,8 @@ if st.button("🚀 Run Discovery"):
     if results:
         df = pd.DataFrame(results)
 
-        # Remove unknowns for cleaner ranking
         df = df[df["Entrepreneur"] != "Unknown"]
 
-        # ===== RANKING =====
         counts = df["Entrepreneur"].value_counts().to_dict()
         df["Score"] = df["Entrepreneur"].map(counts)
 
@@ -205,17 +208,6 @@ if st.button("🚀 Run Discovery"):
 
         st.success(f"✅ Found {len(df)} results")
 
-        # ===== LEADERBOARD =====
-        st.subheader("🏆 Top Entrepreneurs")
-
-        top = df.groupby("Entrepreneur")["Score"].max().sort_values(ascending=False).head(10)
-
-        for name, score in top.items():
-            st.markdown(f"**{name}** — 🔥 {score}")
-
-        st.divider()
-
-        # ===== RESULTS =====
         for _, r in df.iterrows():
             with st.container():
                 st.markdown(f"### 🏢 {r['Company']}")
@@ -227,7 +219,7 @@ if st.button("🚀 Run Discovery"):
                 st.divider()
 
         csv = df.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "ranked_results.csv")
+        st.download_button("📥 Download CSV", csv, "results.csv")
 
     else:
         st.error("No results found")
