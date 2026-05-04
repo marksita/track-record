@@ -7,7 +7,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**Company Detection v4** - Fixed for general news titles")
+st.markdown("**Company Detection v5** - Much smarter & cleaner")
 
 # ==================== Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -44,8 +44,11 @@ INDUSTRIES = {
     "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
 }
 
-# ==================== IMPROVED Company Detection ====================
-KNOWN_COMPANIES = ["Tesla", "SpaceX", "xAI", "Neuralink", "OpenAI", "Anthropic", "Stripe", "Airbnb", "Palantir", "a16z", "Founders Fund", "Y Combinator"]
+# ==================== Better Company Detection ====================
+KNOWN_COMPANIES = {
+    "tesla", "spacex", "xai", "neuralink", "openai", "anthropic", "stripe", "airbnb", 
+    "palantir", "founders fund", "y combinator", "a16z"
+}
 
 def clean_google_title(title):
     if " - " in title:
@@ -54,30 +57,31 @@ def clean_google_title(title):
 
 def extract_company_name(title):
     if not title:
-        return "Unknown Company"
+        return "No Company Mentioned"
     
-    clean_title = clean_google_title(title)
+    clean_title = clean_google_title(title).lower()
     
-    # Direct match for known big companies
+    # 1. Check for known big companies first
     for company in KNOWN_COMPANIES:
-        if company.lower() in clean_title.lower():
-            return company
+        if company in clean_title:
+            # Return original casing
+            orig = re.search(r'(?i)\b' + re.escape(company) + r'\b', title)
+            return orig.group(0) if orig else company.title()
     
-    # Funding / Action patterns
+    # 2. Funding-style patterns only
     patterns = [
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)',
-        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,45}?)\s+(?:raises|secures|announces|launches|unveils)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)',
+        r'([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)\s+(?:raises|secures|announces|launches|unveils)',
     ]
     
     for pattern in patterns:
-        match = re.search(pattern, clean_title)
+        match = re.search(pattern, title)
         if match:
             company = match.group(1).strip()
-            bad_words = ['elon', 'sam', 'mark', 'peter', 'garry', 'david', 'chamath']
-            if len(company) >= 4 and not any(bad in company.lower() for bad in bad_words):
+            if len(company) >= 4 and company.lower() not in ["elon", "sam", "mark", "chamath", "david", "peter"]:
                 return company.title()
     
-    return "Unknown Company"
+    return "No Company Mentioned"
 
 def clean_description(title):
     desc = clean_google_title(title)
@@ -161,4 +165,4 @@ if st.button(f"🔍 Search {selected_industry}", type="primary"):
         st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
 
 st.divider()
-st.caption("💡 Now detects Tesla, OpenAI, xAI, etc. even in general news")
+st.caption("💡 Now using 'No Company Mentioned' for general/political news")
