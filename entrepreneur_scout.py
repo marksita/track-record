@@ -3,23 +3,15 @@ import feedparser
 import pandas as pd
 import re
 import urllib.parse
-import requests
-import json
-from newspaper import Article
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
-st.title("🚀 Entrepreneur Scout (AI Powered)")
+st.title("🚀 Entrepreneur Scout")
 st.markdown("Discover entrepreneurs **starting or investing in companies**")
 
 # ==================== CONFIG ====================
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3"
-MAX_AI_CALLS = 8  # prevent slowdowns
-
-# ==================== DATA ====================
 KNOWN_COMPANIES = {
-    "tesla", "spacex", "xai", "openai", "anthropic",
-    "stripe", "airbnb", "palantir"
+    "tesla", "spacex", "xai", "openai",
+    "anthropic", "stripe", "airbnb", "palantir"
 }
 
 RSS_FEEDS = {
@@ -29,84 +21,71 @@ RSS_FEEDS = {
 }
 
 # ==================== HELPERS ====================
-def clean_google_title(title):
+def clean_title(title):
     return title.rsplit(" - ", 1)[0].strip() if " - " in title else title.strip()
 
-def extract_company_name(title):
-    clean = clean_google_title(title).lower()
+def extract_company(title):
+    clean = clean_title(title).lower()
 
+    # Known companies
     for c in KNOWN_COMPANIES:
         if c in clean:
             return c.title()
 
-    match = re.search(r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches)', title)
-    if match:
-        return match.group(1)
+    # Funding / launch patterns
+    patterns = [
+        r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches|unveils)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})'
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, title)
+        if match:
+            company = match.group(1)
+
+            if company.lower() in ["startup", "company", "firm", "round", "funding"]:
+                continue
+
+            return company
 
     return None
 
-def extract_basic(text):
-    match = re.search(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    return match.group(1) if match else "Unknown", "Unknown"
+def extract_entrepreneur(text):
+    patterns = [
+        r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(launches|founds|starts)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)',
+        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+
+    # Fallback: first name-like match
+    fallback = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    return fallback[0] if fallback else "Unknown"
+
+def detect_role(text):
+    text = text.lower()
+
+    if any(k in text for k in ["founded", "launched", "started"]):
+        return "Founder"
+    if any(k in text for k in ["invested", "backed", "led"]):
+        return "Investor"
+
+    return "Mentioned"
 
 def is_high_signal(text):
     keywords = ["funding", "startup", "raises", "invest", "backed", "launch"]
     return any(k in text.lower() for k in keywords)
 
-# ==================== CACHED FUNCTIONS ====================
-@st.cache_data(ttl=3600)
-def get_article_text(url):
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text[:3000]
-    except:
-        return None
-
-@st.cache_data(ttl=3600)
-def extract_with_ollama(text):
-    try:
-        prompt = f"""
-        Extract:
-        - entrepreneur
-        - role (Founder or Investor)
-        - company
-
-        Return ONLY JSON:
-        {{
-          "entrepreneur": "",
-          "role": "",
-          "company": ""
-        }}
-
-        Text:
-        {text}
-        """
-
-        res = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=20
-        )
-
-        output = res.json().get("response", "")
-        return json.loads(output)
-
-    except:
-        return None
-
 # ==================== FETCH ====================
 def fetch_google_news(query, months):
     encoded = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={encoded}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
-    feed = feedparser.parse(url)
-
-    return feed.entries[:15]
+    return feedparser.parse(url).entries[:15]
 
 # ==================== UI ====================
 sources = st.sidebar.multiselect(
@@ -118,11 +97,12 @@ sources = st.sidebar.multiselect(
 months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
 
 # ==================== MAIN ====================
-if st.button("🚀 Run AI Discovery"):
+if st.button("🚀 Run Discovery"):
 
     queries = [
         "startup raises funding",
         "founded startup",
+        "launched startup",
         "invested in startup",
         "backs startup",
         "led funding round"
@@ -130,7 +110,6 @@ if st.button("🚀 Run AI Discovery"):
 
     results = []
     seen = set()
-    ai_calls = 0
 
     for source in sources:
 
@@ -138,46 +117,31 @@ if st.button("🚀 Run AI Discovery"):
             entries = []
             for q in queries:
                 entries += fetch_google_news(q, months)
-
         else:
-            feed = feedparser.parse(RSS_FEEDS[source])
-            entries = feed.entries[:15]
+            entries = feedparser.parse(RSS_FEEDS[source]).entries[:20]
 
         for entry in entries:
 
             title = entry.title or ""
-            clean = clean_google_title(title)
+            clean = clean_title(title)
 
             if clean in seen:
                 continue
             seen.add(clean)
 
-            company = extract_company_name(title)
-            name, role = extract_basic(clean)
+            # Only keep high-signal articles
+            if not is_high_signal(clean):
+                continue
 
-            # 🔥 AI UPGRADE
-            if (
-                ai_calls < MAX_AI_CALLS
-                and is_high_signal(clean)
-                and (company is None or name == "Unknown")
-            ):
-                article = get_article_text(entry.link)
-
-                if article:
-                    ai_data = extract_with_ollama(article)
-
-                    if ai_data:
-                        name = ai_data.get("entrepreneur", name)
-                        role = ai_data.get("role", role)
-                        company = ai_data.get("company", company)
-
-                        ai_calls += 1
-
+            company = extract_company(title)
             if company is None:
                 continue
 
+            entrepreneur = extract_entrepreneur(clean)
+            role = detect_role(clean)
+
             results.append({
-                "Entrepreneur": name,
+                "Entrepreneur": entrepreneur,
                 "Role": role,
                 "Company": company,
                 "Title": clean,
