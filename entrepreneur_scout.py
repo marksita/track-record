@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout")
-st.markdown("**Find entrepreneurs who started or invested in new companies**")
+st.markdown("Find entrepreneurs who **started or invested in companies**")
 
 # ==================== Known Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -29,53 +29,55 @@ def clean_google_title(title):
 
 def extract_company_name(title):
     if not title:
-        return None
+        return "Unknown"
 
     clean_title = clean_google_title(title).lower()
 
+    # Known companies first
     for company in KNOWN_COMPANIES:
         if company in clean_title:
-            orig = re.search(r'(?i)\b' + re.escape(company) + r'\b', title)
-            return orig.group(0) if orig else company.title()
+            return company.title()
 
+    # Regex extraction
     patterns = [
-        r'([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)\s+(?:raises|secures|announces|launches|unveils)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{4,45}?)',
+        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,40}?)\s+(?:raises|secures|announces|launches|unveils)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,40}?)',
     ]
 
     for pattern in patterns:
         match = re.search(pattern, title)
         if match:
-            company = match.group(1).strip()
-            if len(company) >= 4:
-                return company.title()
+            return match.group(1).strip()
 
-    return None
+    return "Unknown"
 
-# ⭐ NEW: Extract entrepreneur + role
+# ⭐ Improved extraction
 def extract_entrepreneur_and_action(text):
     patterns = [
-        # Founder patterns
-        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|launched|started)', "Founder"),
+        # Elon Musk launches xAI
+        (r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(launches|founds|starts)', "Founder"),
 
-        # Investor patterns
-        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backed|led)', "Investor"),
+        # Sam Altman-backed startup
+        (r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed', "Investor"),
 
-        # Reverse phrasing
+        # Peter Thiel invests in
+        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)', "Investor"),
+
+        # Funding led by X
         (r'(invested|backed|led).*?by ([A-Z][a-z]+ [A-Z][a-z]+)', "Investor"),
     ]
 
     for pattern, role in patterns:
         match = re.search(pattern, text)
         if match:
-            if role == "Investor" and len(match.groups()) > 1:
+            if len(match.groups()) >= 2 and role == "Investor":
                 name = match.group(2)
             else:
                 name = match.group(1)
 
             return name.strip(), role
 
-    return None, None
+    return "Unknown", "Unknown"
 
 def is_high_signal(name):
     return name in ALL_ENTREPRENEURS
@@ -96,17 +98,13 @@ def fetch_google_news(query, days=30, source_filter=None):
         feed = feedparser.parse(rss_url)
 
         results = []
-        for entry in feed.entries[:12]:
+
+        for entry in feed.entries[:15]:
             title = entry.title or ""
             clean_title = clean_google_title(title)
 
             company = extract_company_name(title)
-            if company is None:
-                continue
-
             entrepreneur, role = extract_entrepreneur_and_action(clean_title)
-            if entrepreneur is None:
-                continue
 
             results.append({
                 "Entrepreneur": entrepreneur,
@@ -120,7 +118,8 @@ def fetch_google_news(query, days=30, source_filter=None):
 
         return results
 
-    except:
+    except Exception as e:
+        st.error(f"Error fetching news: {e}")
         return []
 
 # ==================== UI ====================
@@ -139,10 +138,12 @@ elif source_option == "Crunchbase Only":
 
 lookback = st.sidebar.slider("Lookback (days)", 7, 90, 14)
 
-# ==================== MAIN SEARCH ====================
-if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
+# ==================== SEARCH ====================
+if st.button("🚀 Find Entrepreneurs", type="primary"):
 
     queries = [
+        "startup founder",
+        "tech entrepreneur startup",
         "founded startup",
         "launched startup",
         "started company",
@@ -150,8 +151,7 @@ if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
         "backs startup",
         "led funding round",
         "angel investor startup",
-        "venture capital invests",
-        "serial entrepreneur new startup"
+        "venture capital invests"
     ]
 
     all_results = []
@@ -163,7 +163,7 @@ if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
             news = fetch_google_news(q, lookback, source_filter)
 
             for item in news:
-                key = (item["Entrepreneur"], item["Company"].lower())
+                key = (item["Description"])
 
                 if key not in seen:
                     seen.add(key)
@@ -174,11 +174,11 @@ if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
     if all_results:
         df = pd.DataFrame(all_results)
 
-        # ⭐ Boost known successful entrepreneurs
+        # Boost known entrepreneurs
         df["Priority"] = df["Entrepreneur"].apply(lambda x: 1 if is_high_signal(x) else 0)
         df = df.sort_values(by="Priority", ascending=False)
 
-        st.success(f"✅ Found **{len(df)}** relevant entrepreneur actions")
+        st.success(f"✅ Found **{len(df)}** results")
 
         st.dataframe(
             df[["Entrepreneur", "Role", "Company", "Description", "Published", "Source"]],
@@ -186,6 +186,7 @@ if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
         )
 
         csv = df.drop(columns=["Priority"]).to_csv(index=False).encode('utf-8')
+
         st.download_button(
             "📥 Download CSV",
             csv,
@@ -194,7 +195,7 @@ if st.button("🚀 Find Entrepreneurs (Founders & Investors)", type="primary"):
         )
 
     else:
-        st.error("No results found. Try increasing lookback or switching source.")
+        st.error("No results found (this is rare now — try different filters)")
 
 st.divider()
-st.caption("Now detects real founders and investors from news headlines")
+st.caption("Now robust: returns results even with imperfect data")
