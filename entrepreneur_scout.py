@@ -80,20 +80,38 @@ def strong_startup_signal(text):
     signals = ["raises", "funding", "series", "seed", "valuation"]
     return any(s in text.lower() for s in signals)
 
+def is_roundup_article(text):
+    patterns = [
+        "the week", "biggest funding rounds", "top funding rounds",
+        "roundup", "weekly funding", "top deals", "this week"
+    ]
+    return any(p in text.lower() for p in patterns)
+
 # ==================== EXTRACTION ====================
 BAD_ENTITIES = {
     "Federal Budget", "Small Business", "Labor Party",
-    "Government", "Prime Minister"
+    "Government", "Prime Minister", "The Week"
 }
 
 BAD_COMPANIES = {
     "Budget", "Government", "Labor", "Policy",
-    "Startup", "Company"
+    "Startup", "Company", "Week", "Rounds", "Deals"
 }
 
 ADJECTIVE_BLOCKLIST = {
     "Swedish", "Australian", "American", "British", "European"
 }
+
+def is_valid_company(name):
+    if not name:
+        return False
+    if len(name) < 3:
+        return False
+    if name in BAD_COMPANIES:
+        return False
+    if name in ADJECTIVE_BLOCKLIST:
+        return False
+    return True
 
 def extract_entrepreneur(text):
     patterns = [
@@ -119,7 +137,6 @@ def extract_entrepreneur(text):
     return None
 
 def extract_company(text):
-    # 🎯 Target company near funding/action words
     patterns = [
         r'(?:startup|company)?\s*([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
         r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
@@ -130,19 +147,12 @@ def extract_company(text):
         match = re.search(pattern, text)
         if match:
             company = match.group(1)
+            if is_valid_company(company):
+                return company
 
-            if company in ADJECTIVE_BLOCKLIST:
-                continue
-            if company in BAD_COMPANIES:
-                continue
-
-            return company
-
-    # fallback: filtered capitalized words
     words = re.findall(r'\b[A-Z][A-Za-z0-9&\-]{3,}\b', text)
-
     for w in words:
-        if w not in ADJECTIVE_BLOCKLIST and w not in BAD_COMPANIES:
+        if is_valid_company(w):
             return w
 
     return None
@@ -194,6 +204,9 @@ if st.button("🚀 Run Discovery"):
         article = fetch_article_text(entry.link)
         text = clean + " " + article
 
+        # 🔥 FILTERS
+        if is_roundup_article(text):
+            return
         if not is_relevant_article(text):
             return
         if not strong_startup_signal(text):
