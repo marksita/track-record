@@ -69,18 +69,16 @@ def fetch_article_text(url):
 
 # ==================== FILTERS ====================
 def is_relevant_article(text):
-    text = text.lower()
     keywords = [
         "startup", "raises", "funding", "venture",
         "invests", "backed", "founded", "launches",
         "seed", "series a", "series b"
     ]
-    return any(k in text for k in keywords)
+    return any(k in text.lower() for k in keywords)
 
 def strong_startup_signal(text):
-    text = text.lower()
-    signals = ["raises", "funding", "seed", "series", "valuation"]
-    return any(s in text for s in signals)
+    signals = ["raises", "funding", "series", "seed", "valuation"]
+    return any(s in text.lower() for s in signals)
 
 # ==================== EXTRACTION ====================
 BAD_ENTITIES = {
@@ -90,7 +88,11 @@ BAD_ENTITIES = {
 
 BAD_COMPANIES = {
     "Budget", "Government", "Labor", "Policy",
-    "Australia", "Startup", "Company"
+    "Startup", "Company"
+}
+
+ADJECTIVE_BLOCKLIST = {
+    "Swedish", "Australian", "American", "British", "European"
 }
 
 def extract_entrepreneur(text):
@@ -110,7 +112,6 @@ def extract_entrepreneur(text):
                 return name
 
     candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-
     for name in candidates:
         if name not in BAD_ENTITIES:
             return name
@@ -118,23 +119,31 @@ def extract_entrepreneur(text):
     return None
 
 def extract_company(text):
+    # 🎯 Target company near funding/action words
     patterns = [
-        r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches|unveils)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})'
+        r'(?:startup|company)?\s*([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
+        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']+)'
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             company = match.group(1)
-            if company not in BAD_COMPANIES:
-                return company
 
-    fallback = re.findall(r'([A-Z][A-Za-z0-9&\-]{3,})', text)
+            if company in ADJECTIVE_BLOCKLIST:
+                continue
+            if company in BAD_COMPANIES:
+                continue
 
-    for c in fallback:
-        if c not in BAD_COMPANIES:
-            return c
+            return company
+
+    # fallback: filtered capitalized words
+    words = re.findall(r'\b[A-Z][A-Za-z0-9&\-]{3,}\b', text)
+
+    for w in words:
+        if w not in ADJECTIVE_BLOCKLIST and w not in BAD_COMPANIES:
+            return w
 
     return None
 
@@ -185,7 +194,6 @@ if st.button("🚀 Run Discovery"):
         article = fetch_article_text(entry.link)
         text = clean + " " + article
 
-        # 🔥 NEW: relevance filters
         if not is_relevant_article(text):
             return
         if not strong_startup_signal(text):
