@@ -37,6 +37,11 @@ def fetch_article_text(url):
     except:
         return ""
 
+# ==================== SENTENCE SPLIT ====================
+def split_sentences(text):
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if len(s.strip()) > 40]
+
 # ==================== FILTERS ====================
 def is_relevant(text):
     return any(k in text.lower() for k in [
@@ -51,14 +56,16 @@ def strong_signal(text):
 
 def is_roundup(text):
     return any(k in text.lower() for k in [
-        "the week", "roundup", "top deals"
+        "the week", "roundup", "top deals",
+        "dozens of", "many startups", "list of"
     ])
 
 # ==================== EXTRACTION ====================
 BLOCK_WORDS = {
     "Startup", "Company", "Tech", "Legal",
     "Week", "Rounds", "Deals",
-    "Swedish", "Australian", "American"
+    "Swedish", "Australian", "American",
+    "Meta", "Google", "DeepMind"
 }
 
 def is_valid_company(name):
@@ -67,8 +74,6 @@ def is_valid_company(name):
 def extract_companies(text):
     patterns = [
         r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures)',
-        r'(?:startup|company)\s+(?:[A-Za-z]+\s+){0,3}?([A-Z][A-Za-z0-9&\-\.\']+)',
-        r'(?:invests? in|backs?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']+)',
         r'(?:joins|joined|appointed)\s+(?:[A-Za-z]+\s+){0,3}?([A-Z][A-Za-z0-9&\-\.\']+)'
     ]
 
@@ -88,7 +93,7 @@ def extract_people(text):
 
     patterns = [
         r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(joins|joined|appointed|hired)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(CEO|founder|executive)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(?:as|to become)\s+(CEO|CTO|founder)',
         r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backed|led)'
     ]
 
@@ -96,10 +101,6 @@ def extract_people(text):
         matches = re.findall(p, text)
         for m in matches:
             people.add(m[0])
-
-    names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    for n in names[:3]:
-        people.add(n)
 
     return list(people)
 
@@ -159,44 +160,54 @@ if st.button("🚀 Run Discovery"):
         clean = title.split(" - ")[0].strip()
 
         article = fetch_article_text(entry.link)
-        text = clean + " " + article
+        full_text = clean + ". " + article
 
-        if is_roundup(text):
-            return
-        if not is_relevant(text):
-            return
-        if not strong_signal(text):
+        if is_roundup(full_text):
             return
 
-        companies = extract_companies(text)
-        people = extract_people(text)
-        backgrounds = extract_backgrounds(text)
+        sentences = split_sentences(full_text)
 
-        if not companies:
-            return
+        for sentence in sentences:
 
-        for company in companies:
-            for person in people if people else ["Unknown"]:
+            if not is_relevant(sentence):
+                continue
 
-                key = (person, company)
+            if not strong_signal(sentence):
+                continue
 
-                if key not in results_dict:
-                    results_dict[key] = {
-                        "Entrepreneur": person,
-                        "Company": company,
-                        "Background": set(backgrounds),
-                        "Role": detect_role(text),
-                        "Score": 1,
-                        "Titles": set([clean]),
-                        "Sources": set([source]),
-                        "Links": set([entry.link])
-                    }
-                else:
-                    results_dict[key]["Score"] += 1
-                    results_dict[key]["Titles"].add(clean)
-                    results_dict[key]["Sources"].add(source)
-                    results_dict[key]["Links"].add(entry.link)
-                    results_dict[key]["Background"].update(backgrounds)
+            companies = extract_companies(sentence)
+            people = extract_people(sentence)
+            backgrounds = extract_backgrounds(sentence)
+
+            if not companies:
+                continue
+
+            # 🚨 kill spam sentences
+            if len(companies) > 2:
+                continue
+
+            for company in companies:
+                for person in people if people else ["Unknown"]:
+
+                    key = (person, company)
+
+                    if key not in results_dict:
+                        results_dict[key] = {
+                            "Entrepreneur": person,
+                            "Company": company,
+                            "Background": set(backgrounds),
+                            "Role": detect_role(sentence),
+                            "Score": 1,
+                            "Titles": set([clean]),
+                            "Sources": set([source]),
+                            "Links": set([entry.link])
+                        }
+                    else:
+                        results_dict[key]["Score"] += 1
+                        results_dict[key]["Titles"].add(clean)
+                        results_dict[key]["Sources"].add(source)
+                        results_dict[key]["Links"].add(entry.link)
+                        results_dict[key]["Background"].update(backgrounds)
 
     # Google
     for q in queries:
@@ -238,7 +249,7 @@ if st.button("🚀 Run Discovery"):
         df = pd.DataFrame(final_results)
         df = df.sort_values(by="Score", ascending=False)
 
-        st.success(f"✅ Found {len(df)} deduplicated results")
+        st.success(f"✅ Found {len(df)} clean, deduplicated results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
@@ -260,4 +271,4 @@ if st.button("🚀 Run Discovery"):
         )
 
     else:
-        st.error("No results found")
+        st.error("No high-quality results found")
