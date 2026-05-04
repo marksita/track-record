@@ -1,246 +1,205 @@
 import streamlit as st
 import feedparser
-from datetime import datetime, timedelta
 import pandas as pd
 import re
 import urllib.parse
+import requests
+import json
+from newspaper import Article
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
-st.title("🚀 Entrepreneur Scout")
+st.title("🚀 Entrepreneur Scout (AI Powered)")
 st.markdown("Discover entrepreneurs **starting or investing in companies**")
 
-# ==================== Known Entrepreneurs ====================
-ALL_ENTREPRENEURS = {
-    "Elon Musk", "Sam Altman", "Marc Andreessen", "Peter Thiel", "Garry Tan",
-    "Mark Cuban", "David Sacks", "Chamath Palihapitiya", "Alex Karp",
-    "Patrick Collison", "Vinod Khosla", "Dario Amodei", "Jason Calacanis",
-    "Keith Rabois", "Reid Hoffman"
-}
+# ==================== CONFIG ====================
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3"
+MAX_AI_CALLS = 8  # prevent slowdowns
 
+# ==================== DATA ====================
 KNOWN_COMPANIES = {
-    "tesla", "spacex", "xai", "neuralink", "openai",
-    "anthropic", "stripe", "airbnb", "palantir"
+    "tesla", "spacex", "xai", "openai", "anthropic",
+    "stripe", "airbnb", "palantir"
 }
 
-# ==================== RSS SOURCES ====================
 RSS_FEEDS = {
     "TechCrunch": "https://techcrunch.com/feed/",
     "VentureBeat": "https://venturebeat.com/feed/",
-    "SiliconANGLE": "https://siliconangle.com/feed/",
     "Crunchbase": "https://news.crunchbase.com/feed/",
 }
 
-# ==================== Helpers ====================
+# ==================== HELPERS ====================
 def clean_google_title(title):
-    if " - " in title:
-        return title.rsplit(" - ", 1)[0].strip()
-    return title.strip()
+    return title.rsplit(" - ", 1)[0].strip() if " - " in title else title.strip()
 
 def extract_company_name(title):
-    if not title:
-        return None
+    clean = clean_google_title(title).lower()
 
-    clean_title = clean_google_title(title).lower()
+    for c in KNOWN_COMPANIES:
+        if c in clean:
+            return c.title()
 
-    for company in KNOWN_COMPANIES:
-        if company in clean_title:
-            return company.title()
-
-    patterns = [
-        r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(?:raises|secures|announces|launches|unveils)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, title)
-        if match:
-            company = match.group(1).strip()
-
-            if company.lower() in ["startup", "company", "firm", "round", "funding"]:
-                continue
-
-            if len(company) < 3:
-                continue
-
-            return company
+    match = re.search(r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(raises|secures|launches)', title)
+    if match:
+        return match.group(1)
 
     return None
 
-def extract_entrepreneur_and_action(text):
-    patterns = [
-        (r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(launches|founds|starts)', "Founder"),
-        (r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed', "Investor"),
-        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)', "Investor"),
-        (r'(invested|backed|led).*?by ([A-Z][a-z]+ [A-Z][a-z]+)', "Investor"),
-    ]
+def extract_basic(text):
+    match = re.search(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    return match.group(1) if match else "Unknown", "Unknown"
 
-    for pattern, role in patterns:
-        match = re.search(pattern, text)
-        if match:
-            if len(match.groups()) >= 2 and role == "Investor":
-                name = match.group(2)
-            else:
-                name = match.group(1)
-            return name.strip(), role
+def is_high_signal(text):
+    keywords = ["funding", "startup", "raises", "invest", "backed", "launch"]
+    return any(k in text.lower() for k in keywords)
 
-    return "Unknown", "Unknown"
-
-def is_high_signal(name):
-    return name in ALL_ENTREPRENEURS
-
-# ==================== Fetch RSS ====================
-def fetch_rss_feed(feed_url):
+# ==================== CACHED FUNCTIONS ====================
+@st.cache_data(ttl=3600)
+def get_article_text(url):
     try:
-        feed = feedparser.parse(feed_url)
-        results = []
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text[:3000]
+    except:
+        return None
 
-        for entry in feed.entries[:20]:
-            title = entry.title or ""
-            clean_title = clean_google_title(title)
+@st.cache_data(ttl=3600)
+def extract_with_ollama(text):
+    try:
+        prompt = f"""
+        Extract:
+        - entrepreneur
+        - role (Founder or Investor)
+        - company
 
-            company = extract_company_name(title)
-            if company is None:
-                continue
+        Return ONLY JSON:
+        {{
+          "entrepreneur": "",
+          "role": "",
+          "company": ""
+        }}
 
-            entrepreneur, role = extract_entrepreneur_and_action(clean_title)
+        Text:
+        {text}
+        """
 
-            results.append({
-                "Entrepreneur": entrepreneur,
-                "Role": role,
-                "Company": company,
-                "Description": clean_title,
-                "Published": entry.published if hasattr(entry, 'published') else "Recent",
-                "Source": feed.feed.title if hasattr(feed.feed, 'title') else "RSS",
-                "Link": entry.link
-            })
+        res = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=20
+        )
 
-        return results
+        output = res.json().get("response", "")
+        return json.loads(output)
 
     except:
-        return []
+        return None
 
-# ==================== Fetch Google ====================
-def fetch_google_news(query, days=30):
-    try:
-        # Convert days → months (Google prefers this)
-        months = max(1, int(days / 30))
+# ==================== FETCH ====================
+def fetch_google_news(query, months):
+    encoded = urllib.parse.quote_plus(query)
+    url = f"https://news.google.com/rss/search?q={encoded}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
+    feed = feedparser.parse(url)
 
-        encoded_query = urllib.parse.quote_plus(query)
-
-        rss_url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
-
-        feed = feedparser.parse(rss_url)
-        results = []
-
-        for entry in feed.entries[:15]:
-            title = entry.title or ""
-            clean_title = clean_google_title(title)
-
-            company = extract_company_name(title)
-            if company is None:
-                continue
-
-            entrepreneur, role = extract_entrepreneur_and_action(clean_title)
-
-            results.append({
-                "Entrepreneur": entrepreneur,
-                "Role": role,
-                "Company": company,
-                "Description": clean_title,
-                "Published": entry.published if hasattr(entry, 'published') else "Recent",
-                "Source": "Google News",
-                "Link": entry.link
-            })
-
-        return results
-
-    except:
-        return []
+    return feed.entries[:15]
 
 # ==================== UI ====================
-st.sidebar.header("Sources")
-
-selected_sources = st.sidebar.multiselect(
-    "Select Sources",
-    ["RSS: TechCrunch", "RSS: VentureBeat", "RSS: SiliconANGLE", "RSS: Crunchbase", "Google News"],
-    default=["RSS: TechCrunch", "Google News"]
+sources = st.sidebar.multiselect(
+    "Sources",
+    ["Google News", "TechCrunch", "VentureBeat", "Crunchbase"],
+    default=["Google News", "TechCrunch"]
 )
 
-lookback = st.sidebar.slider("Lookback (days)", 7, 365, 30)
-st.sidebar.caption("Tip: Larger lookback = more results but slightly noisier")
+months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
 
-# ==================== SEARCH ====================
-if st.button("🚀 Find Entrepreneurs", type="primary"):
+# ==================== MAIN ====================
+if st.button("🚀 Run AI Discovery"):
 
     queries = [
         "startup raises funding",
         "founded startup",
-        "launched startup",
-        "started company",
         "invested in startup",
         "backs startup",
         "led funding round"
     ]
 
-    all_results = []
+    results = []
     seen = set()
-    progress_bar = st.progress(0)
+    ai_calls = 0
 
-    for idx, source in enumerate(selected_sources):
-        with st.spinner(f"Fetching from {source}..."):
+    for source in sources:
 
-            if "RSS" in source:
-                feed_name = source.replace("RSS: ", "")
-                feed_url = RSS_FEEDS.get(feed_name)
+        if source == "Google News":
+            entries = []
+            for q in queries:
+                entries += fetch_google_news(q, months)
 
-                results = fetch_rss_feed(feed_url) if feed_url else []
+        else:
+            feed = feedparser.parse(RSS_FEEDS[source])
+            entries = feed.entries[:15]
 
-            elif source == "Google News":
-                results = []
-                for q in queries:
-                    results.extend(fetch_google_news(q, lookback))
+        for entry in entries:
 
-            else:
-                results = []
+            title = entry.title or ""
+            clean = clean_google_title(title)
 
-            for item in results:
-                key = item["Description"]
+            if clean in seen:
+                continue
+            seen.add(clean)
 
-                if key not in seen:
-                    seen.add(key)
-                    all_results.append(item)
+            company = extract_company_name(title)
+            name, role = extract_basic(clean)
 
-        progress_bar.progress((idx + 1) / len(selected_sources))
+            # 🔥 AI UPGRADE
+            if (
+                ai_calls < MAX_AI_CALLS
+                and is_high_signal(clean)
+                and (company is None or name == "Unknown")
+            ):
+                article = get_article_text(entry.link)
 
-    if all_results:
-        df = pd.DataFrame(all_results)
+                if article:
+                    ai_data = extract_with_ollama(article)
 
-        df["Priority"] = df["Entrepreneur"].apply(lambda x: 1 if is_high_signal(x) else 0)
-        df = df.sort_values(by="Priority", ascending=False)
+                    if ai_data:
+                        name = ai_data.get("entrepreneur", name)
+                        role = ai_data.get("role", role)
+                        company = ai_data.get("company", company)
 
-        st.success(f"✅ Found **{len(df)}** companies")
+                        ai_calls += 1
 
-        # ===== Card UI =====
-        for _, row in df.iterrows():
+            if company is None:
+                continue
+
+            results.append({
+                "Entrepreneur": name,
+                "Role": role,
+                "Company": company,
+                "Title": clean,
+                "Link": entry.link
+            })
+
+    # ==================== DISPLAY ====================
+    if results:
+        df = pd.DataFrame(results)
+
+        st.success(f"✅ Found {len(df)} results")
+
+        for _, r in df.iterrows():
             with st.container():
-                st.markdown(f"### 🏢 {row['Company']}")
-                st.markdown(f"**👤 {row['Entrepreneur']}** — *{row['Role']}*")
-                st.markdown(f"📰 {row['Description']}")
-                st.markdown(f"📅 {row['Published']} | 🏷️ {row['Source']}")
-                st.markdown(f"[🔗 Read Article]({row['Link']})")
+                st.markdown(f"### 🏢 {r['Company']}")
+                st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
+                st.markdown(f"📰 {r['Title']}")
+                st.markdown(f"[🔗 Read Article]({r['Link']})")
                 st.divider()
 
-        csv = df.drop(columns=["Priority"]).to_csv(index=False).encode('utf-8')
-
-        st.download_button(
-            "📥 Download CSV",
-            csv,
-            "entrepreneur_results.csv",
-            "text/csv"
-        )
+        csv = df.to_csv(index=False).encode()
+        st.download_button("📥 Download CSV", csv, "results.csv")
 
     else:
-        st.error("No results found. Try increasing lookback or adding sources.")
-
-st.divider()
-st.caption("Now supports 12-month discovery across multiple startup news sources")
+        st.error("No results found")
