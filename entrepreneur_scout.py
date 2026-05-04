@@ -3,6 +3,7 @@ import feedparser
 from datetime import datetime, timedelta
 import pandas as pd
 import re
+import urllib.parse  # ✅ FIXED: required for URL encoding
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout")
@@ -51,7 +52,6 @@ def extract_company_name(title):
 
     return "Unknown"
 
-# ⭐ Improved extraction
 def extract_entrepreneur_and_action(text):
     patterns = [
         # Elon Musk launches xAI
@@ -60,7 +60,7 @@ def extract_entrepreneur_and_action(text):
         # Sam Altman-backed startup
         (r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed', "Investor"),
 
-        # Peter Thiel invests in
+        # Peter Thiel invests
         (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)', "Investor"),
 
         # Funding led by X
@@ -94,7 +94,11 @@ def fetch_google_news(query, days=30, source_filter=None):
         elif source_filter == "crunchbase":
             base_query += " site:crunchbase.com"
 
-        rss_url = f"https://news.google.com/rss/search?q={base_query}+when:{start.strftime('%Y-%m-%d')}&hl=en-US&gl=US&ceid=US:en"
+        # ✅ FIX: Encode query properly
+        encoded_query = urllib.parse.quote_plus(base_query)
+
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}+when:{start.strftime('%Y-%m-%d')}&hl=en-US&gl=US&ceid=US:en"
+
         feed = feedparser.parse(rss_url)
 
         results = []
@@ -163,7 +167,7 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
             news = fetch_google_news(q, lookback, source_filter)
 
             for item in news:
-                key = (item["Description"])
+                key = item["Description"]  # dedupe by headline
 
                 if key not in seen:
                     seen.add(key)
@@ -195,7 +199,7 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
         )
 
     else:
-        st.error("No results found (this is rare now — try different filters)")
+        st.error("No results found (try increasing lookback or changing source)")
 
 st.divider()
-st.caption("Now robust: returns results even with imperfect data")
+st.caption("Robust version: handles real-world messy news data")
