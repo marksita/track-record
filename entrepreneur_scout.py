@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
-st.title("🚀 Entrepreneur Scout - Top 100")
-st.markdown("**TechCrunch + Crunchbase Search**")
+st.title("🚀 Entrepreneur Scout")
+st.markdown("**Find Activity from Any Successful Entrepreneurs**")
 
-# ==================== Entrepreneurs ====================
+# ==================== Core Entrepreneurs (used for targeted search) ====================
 ALL_ENTREPRENEURS = {
     "Elon Musk": ["elonmusk", "xAI", "Tesla", "SpaceX", "Neuralink"],
     "Sam Altman": ["sama", "OpenAI"],
@@ -17,31 +17,13 @@ ALL_ENTREPRENEURS = {
     "Peter Thiel": ["peterthiel", "Founders Fund"],
     "Garry Tan": ["garrytan", "Y Combinator"],
     "Mark Cuban": ["mcuban"],
-    "Naval Ravikant": ["naval"],
-    "Balaji Srinivasan": ["balajis"],
-    "Reid Hoffman": ["reidhoffman"],
-    "Chamath Palihapitiya": ["chamath"],
     "David Sacks": ["DavidSacks"],
-    "Jason Calacanis": ["jason"],
-    "Keith Rabois": ["rabois"],
+    "Chamath Palihapitiya": ["chamath"],
     "Alex Karp": ["palantir"],
     "Patrick Collison": ["patrickc", "Stripe"],
-    "Brian Chesky": ["bchesky", "Airbnb"],
     "Vinod Khosla": ["vkhosla"],
     "Dario Amodei": ["darioamodei", "Anthropic"],
-    "Jensen Huang": ["JensenHuang"],
-    "Jeff Bezos": ["JeffBezos"],
-}
-
-INDUSTRIES = {
-    "All Industries": ALL_ENTREPRENEURS,
-    "AI / Deep Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Sam Altman", "Marc Andreessen", "Alex Karp", "Dario Amodei"]},
-    "Fintech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Mark Cuban", "Chamath Palihapitiya", "David Sacks", "Patrick Collison"]},
-    "Biotech / Health": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Sam Altman", "Vinod Khosla", "Dario Amodei"]},
-    "Cleantech / Climate": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Elon Musk", "Vinod Khosla", "Jeff Bezos"]},
-    "Agritech / Food Tech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Vinod Khosla", "Elon Musk"]},
-    "LegalTech": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Peter Thiel", "Marc Andreessen", "David Sacks"]},
-    "Crypto / Web3": {k: v for k, v in ALL_ENTREPRENEURS.items() if k in ["Balaji Srinivasan", "Chamath Palihapitiya"]},
+    # Add more if you want
 }
 
 # ==================== Company Detection ====================
@@ -80,7 +62,6 @@ def clean_description(title):
     desc = clean_google_title(title)
     return desc[:220] + "..." if len(desc) > 220 else desc
 
-# ==================== Fetch Function with Source Options ====================
 def fetch_google_news(query, days=30, source_filter=None):
     try:
         end = datetime.now()
@@ -93,16 +74,14 @@ def fetch_google_news(query, days=30, source_filter=None):
             base_query += " site:crunchbase.com"
         
         rss_url = f"https://news.google.com/rss/search?q={base_query}+when:{start.strftime('%Y-%m-%d')}&hl=en-US&gl=US&ceid=US:en"
-        
         feed = feedparser.parse(rss_url)
+        
         results = []
-        for entry in feed.entries[:10]:
+        for entry in feed.entries[:15]:
             title = entry.title or ""
             company = extract_company_name(title)
-            
             if company is None:
                 continue
-                
             results.append({
                 "Entrepreneur": name,
                 "Company": company,
@@ -117,11 +96,15 @@ def fetch_google_news(query, days=30, source_filter=None):
 
 # ==================== UI ====================
 st.sidebar.header("🔎 Search Controls")
-mode = st.sidebar.radio("Search Mode", ["Predefined Industry", "Custom Industry/Keyword"])
+
+search_mode = st.sidebar.radio("Search Mode", [
+    "Broad Discovery - Any Successful Entrepreneurs",
+    "Targeted Search (Specific People)"
+])
 
 source_option = st.sidebar.selectbox(
-    "News Source",
-    options=["All Sources", "TechCrunch Only", "Crunchbase Only"],
+    "News Source", 
+    options=["All Sources", "TechCrunch Only", "Crunchbase Only"], 
     index=0
 )
 
@@ -131,54 +114,49 @@ if source_option == "TechCrunch Only":
 elif source_option == "Crunchbase Only":
     source_filter = "crunchbase"
 
-if mode == "Predefined Industry":
-    selected_industry = st.sidebar.selectbox("Select Industry", options=list(INDUSTRIES.keys()))
-    industry_ents = INDUSTRIES[selected_industry]
-else:
-    custom_query = st.sidebar.text_input("Custom industry or keyword", placeholder="quantum computing, ev battery...")
-    selected_industry = custom_query if custom_query else "Custom Search"
-    industry_ents = ALL_ENTREPRENEURS
-
-selected_ents = st.sidebar.multiselect(
-    f"Select Entrepreneurs (~{len(industry_ents)} available)",
-    options=list(industry_ents.keys()),
-    default=list(industry_ents.keys())[:8]
-)
-
 lookback = st.sidebar.slider("Lookback period (days)", 7, 90, 14)
 
-if st.button(f"🔍 Search {selected_industry} ({source_option})", type="primary"):
-    all_results = []
-    progress_bar = st.progress(0)
-    
-    for idx, name in enumerate(selected_ents):
-        st.subheader(f"🔹 {name}")
-        terms = industry_ents[name]
+if search_mode == "Broad Discovery - Any Successful Entrepreneurs":
+    if st.button("🚀 Search Recent Activity from Successful Entrepreneurs", type="primary"):
+        broad_terms = ["raises $", "secures funding", "new startup", "led investment", "acquires", 
+                      "venture capital", "seed round", "Series A", "Series B"]
         
-        for term in terms:
-            with st.spinner(f"Searching {term}..."):
-                search_term = term if mode == "Predefined Industry" else f"{term} {custom_query}"
-                news = fetch_google_news(search_term, lookback, source_filter)
-                all_results.extend(news)
+        all_results = []
+        seen = set()
+        progress_bar = st.progress(0)
+        
+        for idx, term in enumerate(broad_terms):
+            st.subheader(f"Searching: {term}")
+            news = fetch_google_news(term, lookback, source_filter)
+            
+            for item in news:
+                # Try to detect entrepreneur from title
+                detected_entrepreneur = "Various Entrepreneurs"
+                for ent in ALL_ENTREPRENEURS.keys():
+                    if ent.lower() in item['Description'].lower():
+                        detected_entrepreneur = ent
+                        break
                 
-                for item in news:
-                    with st.expander(f"🏢 {item['Company']}"):
-                        st.caption(f"📅 {item['Published']} • {item['Source']}")
-                        st.markdown(f"**Company:** {item['Company']}")
-                        st.write(item['Description'])
-                        st.markdown(f"[🔗 Read Full Article]({item['Link']})")
+                key = (detected_entrepreneur, item['Company'].lower())
+                if key not in seen:
+                    seen.add(key)
+                    all_results.append({**item, "Entrepreneur": detected_entrepreneur})
+            
+            progress_bar.progress((idx + 1) / len(broad_terms))
         
-        progress_bar.progress((idx + 1) / len(selected_ents))
-    
-    if all_results:
-        df = pd.DataFrame(all_results)
-        st.success(f"✅ Found **{len(df)}** results with company mentions")
-        st.dataframe(df[["Entrepreneur", "Company", "Description", "Published", "Source"]], use_container_width=True)
-        
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download CSV", csv, f"{selected_industry}_results.csv", "text/csv")
-    else:
-        st.warning("No results with company mentions found. Try different source or longer period.")
+        if all_results:
+            df = pd.DataFrame(all_results[:100])
+            st.success(f"✅ Found **{len(df)}** recent company activities by successful entrepreneurs")
+            st.dataframe(df[["Entrepreneur", "Company", "Description", "Published", "Source"]], use_container_width=True)
+            
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download CSV", csv, "successful_entrepreneurs_results.csv", "text/csv")
+        else:
+            st.warning("No strong results found. Try increasing lookback days.")
+
+else:
+    # Targeted Search (original mode)
+    st.info("Use the Broad Discovery mode above to find any successful entrepreneurs dynamically.")
 
 st.divider()
-st.caption("💡 Use **Crunchbase Only** for funding & company data • **TechCrunch Only** for startup news")
+st.caption("💡 Broad Discovery mode searches high-signal funding & startup keywords")
