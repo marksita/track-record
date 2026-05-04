@@ -9,14 +9,21 @@ st.title("🚀 Entrepreneur Scout")
 
 # ==================== SOURCES ====================
 RSS_FEEDS = {
+    # Global
     "TechCrunch": "https://techcrunch.com/feed/",
     "VentureBeat": "https://venturebeat.com/feed/",
     "Crunchbase News": "https://news.crunchbase.com/feed/",
     "The Verge": "https://www.theverge.com/rss/index.xml",
     "WIRED": "https://www.wired.com/feed/rss",
     "Forbes Tech": "https://www.forbes.com/technology/feed/",
-    "Business Insider Tech": "https://www.businessinsider.com/rss",
+    "Business Insider": "https://www.businessinsider.com/rss",
     "Tech.eu": "https://tech.eu/feed/",
+
+    # 🇦🇺 Australia
+    "Startup Daily": "https://www.startupdaily.net/feed/",
+    "SmartCompany": "https://www.smartcompany.com.au/feed/",
+    "InnovationAus": "https://www.innovationaus.com/feed/",
+    "AFR": "https://www.afr.com/rss"
 }
 
 GOOGLE_SOURCE = "Google News"
