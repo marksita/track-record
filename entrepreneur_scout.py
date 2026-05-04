@@ -26,30 +26,6 @@ RSS_FEEDS = {
 }
 
 GOOGLE_SOURCE = "Google News"
-st.markdown(f"**Sources used:** {', '.join(list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE])}")
-
-# ==================== COUNTRY ====================
-COUNTRY_KEYWORDS = {
-    "USA": ["us", "usa"],
-    "UK": ["uk", "london"],
-    "Australia": ["australia", "sydney", "melbourne"]
-}
-
-SOURCE_COUNTRY_MAP = {
-    "Startup Daily": "Australia",
-    "SmartCompany": "Australia",
-    "InnovationAus": "Australia",
-    "AFR": "Australia"
-}
-
-def detect_country(text, source=None):
-    text = text.lower()
-    for c, kws in COUNTRY_KEYWORDS.items():
-        if any(k in text for k in kws):
-            return c
-    if source in SOURCE_COUNTRY_MAP:
-        return SOURCE_COUNTRY_MAP[source]
-    return "Unknown"
 
 # ==================== SCRAPING ====================
 @st.cache_data(ttl=3600)
@@ -63,15 +39,20 @@ def fetch_article_text(url):
 
 # ==================== FILTERS ====================
 def is_relevant(text):
-    keywords = ["startup", "funding", "raises", "venture", "seed", "series"]
-    return any(k in text.lower() for k in keywords)
+    return any(k in text.lower() for k in [
+        "startup", "funding", "raises", "venture",
+        "joins", "appointed", "ceo"
+    ])
 
 def strong_signal(text):
-    return any(k in text.lower() for k in ["raises", "funding", "series", "seed"])
+    return any(k in text.lower() for k in [
+        "raises", "funding", "joins", "appointed", "hired"
+    ])
 
 def is_roundup(text):
-    patterns = ["the week", "top deals", "biggest funding rounds", "roundup"]
-    return any(p in text.lower() for p in patterns)
+    return any(k in text.lower() for k in [
+        "the week", "top deals", "roundup"
+    ])
 
 # ==================== EXTRACTION ====================
 BLOCK_WORDS = {
@@ -85,25 +66,24 @@ def is_valid_company(name):
 
 def extract_company(text):
     patterns = [
-        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures|announces)',
-        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures|announces)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']+)'
+        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures)',
+        r'(?:joins|joined|appointed)\s+(?:[A-Za-z]+\s+){0,3}?([A-Z][A-Za-z0-9&\-\.\']+)'
     ]
 
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
+    for p in patterns:
+        matches = re.findall(p, text)
         if matches:
-            company = matches[-1]  # 🔥 critical fix
+            match = matches[-1]
+            company = match[0] if isinstance(match, tuple) else match
             if is_valid_company(company):
                 return company
 
-    return None  # ❌ no fallback anymore
+    return None
 
 def extract_entrepreneur(text):
     patterns = [
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|launched|started)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backed|led)',
-        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
+        r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(joins|joined|appointed|hired)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(CEO|founder|executive)'
     ]
 
     for p in patterns:
@@ -114,12 +94,29 @@ def extract_entrepreneur(text):
     names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
     return names[0] if names else None
 
+# ==================== NEW: BACKGROUND DETECTION ====================
+def extract_background(text):
+    patterns = [
+        r'ex[- ]([A-Z][A-Za-z0-9&\-\.\']+)',
+        r'former\s+([A-Z][A-Za-z0-9&\-\.\']+)',
+        r'previously\s+at\s+([A-Z][A-Za-z0-9&\-\.\']+)'
+    ]
+
+    for p in patterns:
+        match = re.search(p, text)
+        if match:
+            return match.group(1)
+
+    return None
+
 def detect_role(text):
     t = text.lower()
-    if any(k in t for k in ["founded", "launched"]):
-        return "Founder"
-    if any(k in t for k in ["invested", "backed", "led"]):
+    if "join" in t or "appointed" in t:
+        return "Operator"
+    if "invest" in t:
         return "Investor"
+    if "found" in t:
+        return "Founder"
     return "Mentioned"
 
 # ==================== FETCH ====================
@@ -136,10 +133,10 @@ if st.button("🚀 Run Discovery"):
 
     queries = [
         "startup raises funding Australia",
-        "Australian startup funding",
-        "Sydney startup raises",
-        "Melbourne startup founder",
-        "venture capital invests Australia"
+        "startup hires CEO",
+        "joins startup CEO",
+        "former Google joins startup",
+        "ex Stripe joins startup"
     ]
 
     results = []
@@ -164,21 +161,24 @@ if st.button("🚀 Run Discovery"):
             return
 
         company = extract_company(text)
-        entrepreneur = extract_entrepreneur(text)
+        person = extract_entrepreneur(text)
+        background = extract_background(text)
 
-        if not company or not entrepreneur:
+        if not company or not person:
             return
 
-        if len(entrepreneur.split()) != 2:
-            return
+        score = 1
+        if background:
+            score += 2  # 🔥 boost high-quality operators
 
         results.append({
-            "Entrepreneur": entrepreneur,
+            "Entrepreneur": person,
             "Company": company,
+            "Background": background or "",
             "Role": detect_role(text),
+            "Score": score,
             "Title": clean,
             "Source": source,
-            "Country": detect_country(text, source),
             "Link": entry.link
         })
 
@@ -195,25 +195,22 @@ if st.button("🚀 Run Discovery"):
     # ==================== DISPLAY ====================
     if results:
         df = pd.DataFrame(results)
-        df["Score"] = df["Entrepreneur"].map(df["Entrepreneur"].value_counts())
         df = df.sort_values(by="Score", ascending=False)
 
-        st.success(f"✅ Found {len(df)} high-quality results")
+        st.success(f"✅ Found {len(df)} results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
             st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
+
+            if r["Background"]:
+                st.markdown(f"🏆 ex-{r['Background']}")
+
             st.markdown(f"🔥 Score: {r['Score']}")
             st.markdown(f"📰 {r['Title']}")
-            st.markdown(f"🌍 {r['Country']} | 📡 {r['Source']}")
+            st.markdown(f"📡 {r['Source']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
             st.divider()
 
-        st.download_button(
-            "📥 Download CSV",
-            df.to_csv(index=False).encode(),
-            "results.csv"
-        )
-
     else:
-        st.error("No high-quality startup results found")
+        st.error("No results found")
