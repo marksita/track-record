@@ -41,12 +41,27 @@ COUNTRY_KEYWORDS = {
     "Europe": ["germany", "france", "spain", "eu", "europe"]
 }
 
-def detect_country(text):
+# NEW: source-based fallback
+SOURCE_COUNTRY_MAP = {
+    "Startup Daily": "Australia",
+    "SmartCompany": "Australia",
+    "InnovationAus": "Australia",
+    "AFR": "Australia"
+}
+
+def detect_country(text, source=None):
     text_lower = text.lower()
+
+    # 1. keyword detection
     for country, keywords in COUNTRY_KEYWORDS.items():
         for keyword in keywords:
             if keyword in text_lower:
                 return country
+
+    # 2. fallback to source
+    if source in SOURCE_COUNTRY_MAP:
+        return SOURCE_COUNTRY_MAP[source]
+
     return "Unknown"
 
 # ==================== CONFIG ====================
@@ -154,7 +169,7 @@ if st.button("🚀 Run Discovery"):
 
             entrepreneur = extract_entrepreneur(clean)
             role = detect_role(clean)
-            country = detect_country(clean)
+            country = detect_country(clean, GOOGLE_SOURCE)
 
             if country_filter != "All" and country != country_filter:
                 continue
@@ -187,7 +202,7 @@ if st.button("🚀 Run Discovery"):
 
             entrepreneur = extract_entrepreneur(clean)
             role = detect_role(clean)
-            country = detect_country(clean)
+            country = detect_country(clean, source_name)
 
             if country_filter != "All" and country != country_filter:
                 continue
