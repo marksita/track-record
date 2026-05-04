@@ -3,11 +3,11 @@ import feedparser
 from datetime import datetime, timedelta
 import pandas as pd
 import re
-import urllib.parse  # ✅ FIXED: required for URL encoding
+import urllib.parse
 
 st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
 st.title("🚀 Entrepreneur Scout")
-st.markdown("Find entrepreneurs who **started or invested in companies**")
+st.markdown("Discover entrepreneurs **starting or investing in companies**")
 
 # ==================== Known Entrepreneurs ====================
 ALL_ENTREPRENEURS = {
@@ -30,7 +30,7 @@ def clean_google_title(title):
 
 def extract_company_name(title):
     if not title:
-        return "Unknown"
+        return None
 
     clean_title = clean_google_title(title).lower()
 
@@ -39,31 +39,31 @@ def extract_company_name(title):
         if company in clean_title:
             return company.title()
 
-    # Regex extraction
     patterns = [
-        r'([A-Z][A-Za-z0-9\s&\'\.-]{3,40}?)\s+(?:raises|secures|announces|launches|unveils)',
-        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9\s&\'\.-]{3,40}?)',
+        r'([A-Z][A-Za-z0-9&\-\.\']{2,})\s+(?:raises|secures|announces|launches|unveils)',
+        r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']{2,})',
     ]
 
     for pattern in patterns:
         match = re.search(pattern, title)
         if match:
-            return match.group(1).strip()
+            company = match.group(1).strip()
 
-    return "Unknown"
+            if company.lower() in ["startup", "company", "firm", "round", "funding"]:
+                continue
+
+            if len(company) < 3:
+                continue
+
+            return company
+
+    return None
 
 def extract_entrepreneur_and_action(text):
     patterns = [
-        # Elon Musk launches xAI
         (r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(launches|founds|starts)', "Founder"),
-
-        # Sam Altman-backed startup
         (r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed', "Investor"),
-
-        # Peter Thiel invests
         (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invests|backs|led)', "Investor"),
-
-        # Funding led by X
         (r'(invested|backed|led).*?by ([A-Z][a-z]+ [A-Z][a-z]+)', "Investor"),
     ]
 
@@ -74,7 +74,6 @@ def extract_entrepreneur_and_action(text):
                 name = match.group(2)
             else:
                 name = match.group(1)
-
             return name.strip(), role
 
     return "Unknown", "Unknown"
@@ -94,13 +93,11 @@ def fetch_google_news(query, days=30, source_filter=None):
         elif source_filter == "crunchbase":
             base_query += " site:crunchbase.com"
 
-        # ✅ FIX: Encode query properly
         encoded_query = urllib.parse.quote_plus(base_query)
 
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}+when:{start.strftime('%Y-%m-%d')}&hl=en-US&gl=US&ceid=US:en"
 
         feed = feedparser.parse(rss_url)
-
         results = []
 
         for entry in feed.entries[:15]:
@@ -108,6 +105,11 @@ def fetch_google_news(query, days=30, source_filter=None):
             clean_title = clean_google_title(title)
 
             company = extract_company_name(title)
+
+            # 🚫 Only keep real companies
+            if company is None:
+                continue
+
             entrepreneur, role = extract_entrepreneur_and_action(clean_title)
 
             results.append({
@@ -146,16 +148,13 @@ lookback = st.sidebar.slider("Lookback (days)", 7, 90, 14)
 if st.button("🚀 Find Entrepreneurs", type="primary"):
 
     queries = [
-        "startup founder",
-        "tech entrepreneur startup",
+        "startup raises funding",
         "founded startup",
         "launched startup",
         "started company",
         "invested in startup",
         "backs startup",
-        "led funding round",
-        "angel investor startup",
-        "venture capital invests"
+        "led funding round"
     ]
 
     all_results = []
@@ -167,7 +166,7 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
             news = fetch_google_news(q, lookback, source_filter)
 
             for item in news:
-                key = item["Description"]  # dedupe by headline
+                key = item["Description"]
 
                 if key not in seen:
                     seen.add(key)
@@ -182,13 +181,19 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
         df["Priority"] = df["Entrepreneur"].apply(lambda x: 1 if is_high_signal(x) else 0)
         df = df.sort_values(by="Priority", ascending=False)
 
-        st.success(f"✅ Found **{len(df)}** results")
+        st.success(f"✅ Found **{len(df)}** companies")
 
-        st.dataframe(
-            df[["Entrepreneur", "Role", "Company", "Description", "Published", "Source"]],
-            use_container_width=True
-        )
+        # ===== Pretty Card UI =====
+        for _, row in df.iterrows():
+            with st.container():
+                st.markdown(f"### 🏢 {row['Company']}")
+                st.markdown(f"**👤 {row['Entrepreneur']}** — *{row['Role']}*")
+                st.markdown(f"📰 {row['Description']}")
+                st.markdown(f"📅 {row['Published']} | 🏷️ {row['Source']}")
+                st.markdown(f"[🔗 Read Article]({row['Link']})")
+                st.divider()
 
+        # CSV download
         csv = df.drop(columns=["Priority"]).to_csv(index=False).encode('utf-8')
 
         st.download_button(
@@ -199,7 +204,7 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
         )
 
     else:
-        st.error("No results found (try increasing lookback or changing source)")
+        st.error("No high-quality company results found. Try increasing lookback.")
 
 st.divider()
-st.caption("Robust version: handles real-world messy news data")
+st.caption("Filtered for real companies + improved readability")
