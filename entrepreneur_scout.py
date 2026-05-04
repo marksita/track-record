@@ -26,14 +26,13 @@ RSS_FEEDS = {
 }
 
 GOOGLE_SOURCE = "Google News"
-
 st.markdown(f"**Sources used:** {', '.join(list(RSS_FEEDS.keys()) + [GOOGLE_SOURCE])}")
 
 # ==================== COUNTRY ====================
 COUNTRY_KEYWORDS = {
-    "USA": ["us", "usa", "california", "new york"],
-    "UK": ["uk", "britain", "london"],
-    "Australia": ["australia", "sydney", "melbourne"],
+    "USA": ["us", "usa"],
+    "UK": ["uk", "london"],
+    "Australia": ["australia", "sydney", "melbourne"]
 }
 
 SOURCE_COUNTRY_MAP = {
@@ -44,150 +43,103 @@ SOURCE_COUNTRY_MAP = {
 }
 
 def detect_country(text, source=None):
-    text_lower = text.lower()
-
-    for country, keywords in COUNTRY_KEYWORDS.items():
-        if any(k in text_lower for k in keywords):
-            return country
-
+    text = text.lower()
+    for c, kws in COUNTRY_KEYWORDS.items():
+        if any(k in text for k in kws):
+            return c
     if source in SOURCE_COUNTRY_MAP:
         return SOURCE_COUNTRY_MAP[source]
-
     return "Unknown"
 
 # ==================== SCRAPING ====================
 @st.cache_data(ttl=3600)
 def fetch_article_text(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
-        paragraphs = soup.find_all("p")
-        return " ".join(p.get_text() for p in paragraphs)[:3000]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:3000]
     except:
         return ""
 
 # ==================== FILTERS ====================
-def is_relevant_article(text):
-    keywords = [
-        "startup", "raises", "funding", "venture",
-        "invests", "backed", "founded", "launches",
-        "seed", "series a", "series b"
-    ]
+def is_relevant(text):
+    keywords = ["startup", "funding", "raises", "venture", "seed", "series"]
     return any(k in text.lower() for k in keywords)
 
-def strong_startup_signal(text):
-    signals = ["raises", "funding", "series", "seed", "valuation"]
-    return any(s in text.lower() for s in signals)
+def strong_signal(text):
+    return any(k in text.lower() for k in ["raises", "funding", "series", "seed"])
 
-def is_roundup_article(text):
-    patterns = [
-        "the week", "biggest funding rounds", "top funding rounds",
-        "roundup", "weekly funding", "top deals", "this week"
-    ]
+def is_roundup(text):
+    patterns = ["the week", "top deals", "biggest funding rounds", "roundup"]
     return any(p in text.lower() for p in patterns)
 
 # ==================== EXTRACTION ====================
-BAD_ENTITIES = {
-    "Federal Budget", "Small Business", "Labor Party",
-    "Government", "Prime Minister", "The Week"
-}
-
-BAD_COMPANIES = {
-    "Budget", "Government", "Labor", "Policy",
-    "Startup", "Company", "Week", "Rounds", "Deals"
-}
-
-ADJECTIVE_BLOCKLIST = {
-    "Swedish", "Australian", "American", "British", "European"
+BLOCK_WORDS = {
+    "Startup", "Company", "Tech", "Legal",
+    "Week", "Rounds", "Deals",
+    "Swedish", "Australian", "American"
 }
 
 def is_valid_company(name):
-    if not name:
-        return False
-    if len(name) < 3:
-        return False
-    if name in BAD_COMPANIES:
-        return False
-    if name in ADJECTIVE_BLOCKLIST:
-        return False
-    return True
-
-def extract_entrepreneur(text):
-    patterns = [
-        r'([A-Z][a-z]+ [A-Z][a-z]+)[’\'s]* .*?(founded|launched|started)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(CEO|founder|co-founder)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+)[- ]backed',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backs|led)',
-        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            name = match.group(1)
-            if name not in BAD_ENTITIES:
-                return name
-
-    candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    for name in candidates:
-        if name not in BAD_ENTITIES:
-            return name
-
-    return None
+    return name and len(name) >= 3 and name not in BLOCK_WORDS
 
 def extract_company(text):
     patterns = [
-        r'(?:startup|company)?\s*([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
-        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(raises|lands|secures|announces)',
+        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures|announces)',
+        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures|announces)',
         r'(?:invests? in|backs?|acquires?|leads?)\s+([A-Z][A-Za-z0-9&\-\.\']+)'
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            company = match.group(1)
+        matches = re.findall(pattern, text)
+        if matches:
+            company = matches[-1]  # 🔥 critical fix
             if is_valid_company(company):
                 return company
 
-    words = re.findall(r'\b[A-Z][A-Za-z0-9&\-]{3,}\b', text)
-    for w in words:
-        if is_valid_company(w):
-            return w
+    return None  # ❌ no fallback anymore
 
-    return None
+def extract_entrepreneur(text):
+    patterns = [
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|launched|started)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backed|led)',
+        r'(?:by|from)\s+([A-Z][a-z]+ [A-Z][a-z]+)'
+    ]
+
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return m.group(1)
+
+    names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    return names[0] if names else None
 
 def detect_role(text):
-    text = text.lower()
-    if any(k in text for k in ["founded", "launched", "started"]):
+    t = text.lower()
+    if any(k in t for k in ["founded", "launched"]):
         return "Founder"
-    if any(k in text for k in ["invested", "backed", "led"]):
+    if any(k in t for k in ["invested", "backed", "led"]):
         return "Investor"
     return "Mentioned"
 
 # ==================== FETCH ====================
-def fetch_google_news(query, months):
-    encoded = urllib.parse.quote_plus(query + " Australia")
-    url = f"https://news.google.com/rss/search?q={encoded}+when:{months}m&hl=en-AU&gl=AU&ceid=AU:en"
+def fetch_google(query, months):
+    q = urllib.parse.quote_plus(query + " Australia")
+    url = f"https://news.google.com/rss/search?q={q}+when:{months}m&hl=en-AU&gl=AU&ceid=AU:en"
     return feedparser.parse(url).entries[:15]
 
 # ==================== UI ====================
 months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
-
-country_filter = st.sidebar.selectbox(
-    "Filter by Country",
-    ["All", "Australia", "USA", "UK"]
-)
 
 # ==================== MAIN ====================
 if st.button("🚀 Run Discovery"):
 
     queries = [
         "startup raises funding Australia",
-        "Australian startup raises",
-        "Sydney startup funding",
+        "Australian startup funding",
+        "Sydney startup raises",
         "Melbourne startup founder",
-        "Australia venture capital invests"
+        "venture capital invests Australia"
     ]
 
     results = []
@@ -204,56 +156,46 @@ if st.button("🚀 Run Discovery"):
         article = fetch_article_text(entry.link)
         text = clean + " " + article
 
-        # 🔥 FILTERS
-        if is_roundup_article(text):
+        if is_roundup(text):
             return
-        if not is_relevant_article(text):
+        if not is_relevant(text):
             return
-        if not strong_startup_signal(text):
+        if not strong_signal(text):
             return
 
-        entrepreneur = extract_entrepreneur(text)
         company = extract_company(text)
+        entrepreneur = extract_entrepreneur(text)
 
-        if not entrepreneur or not company:
+        if not company or not entrepreneur:
             return
 
         if len(entrepreneur.split()) != 2:
             return
 
-        role = detect_role(text)
-        country = detect_country(text, source)
-
-        if country_filter != "All" and country != country_filter:
-            return
-
         results.append({
             "Entrepreneur": entrepreneur,
-            "Role": role,
             "Company": company,
+            "Role": detect_role(text),
             "Title": clean,
             "Source": source,
-            "Country": country,
+            "Country": detect_country(text, source),
             "Link": entry.link
         })
 
     # Google
     for q in queries:
-        for e in fetch_google_news(q, months):
+        for e in fetch_google(q, months):
             process(e, GOOGLE_SOURCE)
 
     # RSS
-    for source, url in RSS_FEEDS.items():
+    for src, url in RSS_FEEDS.items():
         for e in feedparser.parse(url).entries[:20]:
-            process(e, source)
+            process(e, src)
 
     # ==================== DISPLAY ====================
     if results:
         df = pd.DataFrame(results)
-
-        counts = df["Entrepreneur"].value_counts().to_dict()
-        df["Score"] = df["Entrepreneur"].map(counts)
-
+        df["Score"] = df["Entrepreneur"].map(df["Entrepreneur"].value_counts())
         df = df.sort_values(by="Score", ascending=False)
 
         st.success(f"✅ Found {len(df)} high-quality results")
