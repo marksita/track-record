@@ -22,6 +22,14 @@ KNOWN_COMPANIES = {
     "anthropic", "stripe", "airbnb", "palantir"
 }
 
+# ==================== RSS SOURCES ====================
+RSS_FEEDS = {
+    "TechCrunch": "https://techcrunch.com/feed/",
+    "VentureBeat": "https://venturebeat.com/feed/",
+    "SiliconANGLE": "https://siliconangle.com/feed/",
+    "Crunchbase": "https://news.crunchbase.com/feed/",
+}
+
 # ==================== Helpers ====================
 def clean_google_title(title):
     if " - " in title:
@@ -34,7 +42,6 @@ def extract_company_name(title):
 
     clean_title = clean_google_title(title).lower()
 
-    # Known companies first
     for company in KNOWN_COMPANIES:
         if company in clean_title:
             return company.title()
@@ -81,32 +88,17 @@ def extract_entrepreneur_and_action(text):
 def is_high_signal(name):
     return name in ALL_ENTREPRENEURS
 
-# ==================== News Fetch ====================
-def fetch_google_news(query, days=30, source_filter=None):
+# ==================== Fetch RSS ====================
+def fetch_rss_feed(feed_url):
     try:
-        end = datetime.now()
-        start = end - timedelta(days=days)
-
-        base_query = query
-        if source_filter == "techcrunch":
-            base_query += " site:techcrunch.com"
-        elif source_filter == "crunchbase":
-            base_query += " site:crunchbase.com"
-
-        encoded_query = urllib.parse.quote_plus(base_query)
-
-        rss_url = f"https://news.google.com/rss/search?q={encoded_query}+when:{start.strftime('%Y-%m-%d')}&hl=en-US&gl=US&ceid=US:en"
-
-        feed = feedparser.parse(rss_url)
+        feed = feedparser.parse(feed_url)
         results = []
 
-        for entry in feed.entries[:15]:
+        for entry in feed.entries[:20]:
             title = entry.title or ""
             clean_title = clean_google_title(title)
 
             company = extract_company_name(title)
-
-            # 🚫 Only keep real companies
             if company is None:
                 continue
 
@@ -118,31 +110,64 @@ def fetch_google_news(query, days=30, source_filter=None):
                 "Company": company,
                 "Description": clean_title,
                 "Published": entry.published if hasattr(entry, 'published') else "Recent",
-                "Source": getattr(entry.source, 'title', source_filter.capitalize() if source_filter else "Google News"),
+                "Source": feed.feed.title if hasattr(feed.feed, 'title') else "RSS",
                 "Link": entry.link
             })
 
         return results
 
-    except Exception as e:
-        st.error(f"Error fetching news: {e}")
+    except:
+        return []
+
+# ==================== Fetch Google ====================
+def fetch_google_news(query, days=30):
+    try:
+        # Convert days → months (Google prefers this)
+        months = max(1, int(days / 30))
+
+        encoded_query = urllib.parse.quote_plus(query)
+
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
+
+        feed = feedparser.parse(rss_url)
+        results = []
+
+        for entry in feed.entries[:15]:
+            title = entry.title or ""
+            clean_title = clean_google_title(title)
+
+            company = extract_company_name(title)
+            if company is None:
+                continue
+
+            entrepreneur, role = extract_entrepreneur_and_action(clean_title)
+
+            results.append({
+                "Entrepreneur": entrepreneur,
+                "Role": role,
+                "Company": company,
+                "Description": clean_title,
+                "Published": entry.published if hasattr(entry, 'published') else "Recent",
+                "Source": "Google News",
+                "Link": entry.link
+            })
+
+        return results
+
+    except:
         return []
 
 # ==================== UI ====================
-st.sidebar.header("Search Controls")
+st.sidebar.header("Sources")
 
-source_option = st.sidebar.selectbox(
-    "News Source",
-    ["All Sources", "TechCrunch Only", "Crunchbase Only"]
+selected_sources = st.sidebar.multiselect(
+    "Select Sources",
+    ["RSS: TechCrunch", "RSS: VentureBeat", "RSS: SiliconANGLE", "RSS: Crunchbase", "Google News"],
+    default=["RSS: TechCrunch", "Google News"]
 )
 
-source_filter = None
-if source_option == "TechCrunch Only":
-    source_filter = "techcrunch"
-elif source_option == "Crunchbase Only":
-    source_filter = "crunchbase"
-
-lookback = st.sidebar.slider("Lookback (days)", 7, 90, 14)
+lookback = st.sidebar.slider("Lookback (days)", 7, 365, 30)
+st.sidebar.caption("Tip: Larger lookback = more results but slightly noisier")
 
 # ==================== SEARCH ====================
 if st.button("🚀 Find Entrepreneurs", type="primary"):
@@ -161,29 +186,41 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
     seen = set()
     progress_bar = st.progress(0)
 
-    for idx, q in enumerate(queries):
-        with st.spinner(f"Searching '{q}'..."):
-            news = fetch_google_news(q, lookback, source_filter)
+    for idx, source in enumerate(selected_sources):
+        with st.spinner(f"Fetching from {source}..."):
 
-            for item in news:
+            if "RSS" in source:
+                feed_name = source.replace("RSS: ", "")
+                feed_url = RSS_FEEDS.get(feed_name)
+
+                results = fetch_rss_feed(feed_url) if feed_url else []
+
+            elif source == "Google News":
+                results = []
+                for q in queries:
+                    results.extend(fetch_google_news(q, lookback))
+
+            else:
+                results = []
+
+            for item in results:
                 key = item["Description"]
 
                 if key not in seen:
                     seen.add(key)
                     all_results.append(item)
 
-        progress_bar.progress((idx + 1) / len(queries))
+        progress_bar.progress((idx + 1) / len(selected_sources))
 
     if all_results:
         df = pd.DataFrame(all_results)
 
-        # Boost known entrepreneurs
         df["Priority"] = df["Entrepreneur"].apply(lambda x: 1 if is_high_signal(x) else 0)
         df = df.sort_values(by="Priority", ascending=False)
 
         st.success(f"✅ Found **{len(df)}** companies")
 
-        # ===== Pretty Card UI =====
+        # ===== Card UI =====
         for _, row in df.iterrows():
             with st.container():
                 st.markdown(f"### 🏢 {row['Company']}")
@@ -193,7 +230,6 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
                 st.markdown(f"[🔗 Read Article]({row['Link']})")
                 st.divider()
 
-        # CSV download
         csv = df.drop(columns=["Priority"]).to_csv(index=False).encode('utf-8')
 
         st.download_button(
@@ -204,7 +240,7 @@ if st.button("🚀 Find Entrepreneurs", type="primary"):
         )
 
     else:
-        st.error("No high-quality company results found. Try increasing lookback.")
+        st.error("No results found. Try increasing lookback or adding sources.")
 
 st.divider()
-st.caption("Filtered for real companies + improved readability")
+st.caption("Now supports 12-month discovery across multiple startup news sources")
