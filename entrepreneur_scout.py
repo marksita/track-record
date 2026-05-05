@@ -5,15 +5,51 @@ import re
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
+from openai import OpenAI
 
-# ==================== OPTIONAL NER ====================
-USE_NER = False
-try:
-    import spacy
-    nlp = spacy.load("en_core_web_sm")
-    USE_NER = True
-except:
-    USE_NER = False
+# ==================== OPENAI ====================
+client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
+
+def extract_with_openai(text):
+    try:
+        prompt = f"""
+Extract the following from this sentence:
+
+- Entrepreneur name
+- Company name
+- Role (Founder, Investor, Operator)
+
+Return ONLY valid JSON like:
+{{
+  "entrepreneur": "...",
+  "company": "...",
+  "role": "..."
+}}
+
+Sentence:
+{text}
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # basic safety parse
+        import json
+        data = json.loads(content)
+
+        return (
+            [data.get("company")] if data.get("company") else [],
+            [data.get("entrepreneur")] if data.get("entrepreneur") else [],
+            data.get("role", "Mentioned")
+        )
+
+    except:
+        return [], [], "Mentioned"
 
 # ==================== APP CONFIG ====================
 st.set_page_config(page_title="Track Record", layout="wide")
@@ -49,7 +85,7 @@ def fetch_article_text(url):
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:3000]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:2000]
     except:
         return ""
 
@@ -76,74 +112,13 @@ def is_roundup(text):
         "dozens of", "many startups", "list of"
     ])
 
-# ==================== NER EXTRACTION ====================
-def extract_with_ner(text):
-    companies = set()
-    people = set()
-
-    if not USE_NER:
-        return [], []
-
-    doc = nlp(text)
-
-    for ent in doc.ents:
-        if ent.label_ == "ORG":
-            companies.add(ent.text.strip())
-        elif ent.label_ == "PERSON":
-            people.add(ent.text.strip())
-
-    return list(companies), list(people)
-
-# ==================== REGEX FALLBACK ====================
-BLOCK_WORDS = {
-    "Startup", "Company", "Tech", "Legal",
-    "Week", "Rounds", "Deals",
-    "Swedish", "Australian", "American",
-    "Meta", "Google", "DeepMind"
-}
-
-def is_valid_company(name):
-    if not name or len(name) < 3:
-        return False
-
-    if len(name.split()) == 1 and name.lower() in [
-        "supply", "capital", "ventures", "group"
-    ]:
-        return False
-
-    return name not in BLOCK_WORDS
-
+# ==================== FALLBACK REGEX ====================
 def extract_companies_regex(text):
     pattern = r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s+[A-Z][A-Za-z0-9&\-\.\']+){0,3})\s+(?:raises|lands|secures)'
-    matches = re.findall(pattern, text)
-    return [m.strip() for m in matches if is_valid_company(m)]
-
-def extract_people_regex(text):
-    pattern = r'([A-Z][a-z]+ [A-Z][a-z]+)'
     return re.findall(pattern, text)
 
-# ==================== BACKGROUNDS ====================
-def extract_backgrounds(text):
-    patterns = [
-        r'ex[- ]([A-Z][A-Za-z0-9&\-\.\']+)',
-        r'former\s+([A-Z][A-Za-z0-9&\-\.\']+)',
-        r'previously\s+at\s+([A-Z][A-Za-z0-9&\-\.\']+)'
-    ]
-    results = set()
-    for p in patterns:
-        for m in re.findall(p, text):
-            results.add(m)
-    return list(results)
-
-def detect_role(text):
-    t = text.lower()
-    if "join" in t or "appointed" in t:
-        return "Operator"
-    if "invest" in t:
-        return "Investor"
-    if "found" in t:
-        return "Founder"
-    return "Mentioned"
+def extract_people_regex(text):
+    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
 
 # ==================== FETCH ====================
 def fetch_google(query, months):
@@ -157,15 +132,12 @@ if st.button("🔍 Search"):
     queries = [
         "startup raises funding",
         "startup secures funding",
-        "startup lands investment",
         "joins startup",
         "startup hires CEO",
         "ex Google joins startup",
-        "former Stripe joins startup"
     ]
 
     results_dict = {}
-    person_counts = {}
 
     def process(entry, source):
         title = entry.title or ""
@@ -181,27 +153,19 @@ if st.button("🔍 Search"):
 
         for sentence in sentences:
 
-            if not is_relevant(sentence):
+            if not is_relevant(sentence) or not strong_signal(sentence):
                 continue
 
-            if not strong_signal(sentence):
-                continue
+            # 🔥 PRIMARY: OpenAI extraction
+            companies, people, role = extract_with_openai(sentence)
 
-            # 🔥 NER first, fallback to regex
-            companies, people = extract_with_ner(sentence)
-
+            # fallback
             if not companies:
                 companies = extract_companies_regex(sentence)
-
             if not people:
                 people = extract_people_regex(sentence)
 
-            backgrounds = extract_backgrounds(sentence)
-
             if not companies:
-                continue
-
-            if len(companies) > 2:
                 continue
 
             for company in companies:
@@ -213,19 +177,14 @@ if st.button("🔍 Search"):
                         results_dict[key] = {
                             "Entrepreneur": person,
                             "Company": company,
-                            "Background": set(backgrounds),
-                            "Role": detect_role(sentence),
+                            "Role": role,
                             "Score": 1,
-                            "Titles": set([clean]),
-                            "Sources": set([source]),
-                            "Links": set([entry.link])
+                            "Title": clean,
+                            "Source": source,
+                            "Link": entry.link
                         }
                     else:
                         results_dict[key]["Score"] += 1
-                        results_dict[key]["Titles"].add(clean)
-                        results_dict[key]["Sources"].add(source)
-                        results_dict[key]["Links"].add(entry.link)
-                        results_dict[key]["Background"].update(backgrounds)
 
     # Google
     for q in queries:
@@ -234,41 +193,24 @@ if st.button("🔍 Search"):
 
     # RSS
     for src, url in RSS_FEEDS.items():
-        for e in feedparser.parse(url).entries[:40]:
+        for e in feedparser.parse(url).entries[:30]:
             process(e, src)
 
-    # ==================== SCORING ====================
-    for (person, _), data in results_dict.items():
-        person_counts[person] = person_counts.get(person, 0) + data["Score"]
-
-    for data in results_dict.values():
-        data["Score"] += person_counts.get(data["Entrepreneur"], 0)
-
     # ==================== OUTPUT ====================
-    final_results = []
-    for data in results_dict.values():
-        final_results.append({
-            "Entrepreneur": data["Entrepreneur"],
-            "Company": data["Company"],
-            "Score": data["Score"],
-            "Titles": " | ".join(list(data["Titles"])[:3]),
-            "Sources": ", ".join(data["Sources"]),
-            "Link": list(data["Links"])[0]
-        })
+    if results_dict:
+        df = pd.DataFrame(results_dict.values())
+        df = df.sort_values(by="Score", ascending=False)
 
-    if final_results:
-        df = pd.DataFrame(final_results).sort_values(by="Score", ascending=False)
-
-        st.success(f"✅ Found {len(df)} high-quality results")
+        st.success(f"✅ Found {len(df)} results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
-            st.markdown(f"**👤 {r['Entrepreneur']}**")
+            st.markdown(f"**👤 {r['Entrepreneur']} — {r['Role']}**")
             st.markdown(f"🔥 Score: {r['Score']}")
-            st.markdown(f"📰 {r['Titles']}")
-            st.markdown(f"📡 {r['Sources']}")
+            st.markdown(f"📰 {r['Title']}")
+            st.markdown(f"📡 {r['Source']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
             st.divider()
 
     else:
-        st.error("No high-quality results found")
+        st.error("No results found")
