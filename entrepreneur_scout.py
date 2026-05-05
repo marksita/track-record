@@ -6,8 +6,10 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="Entrepreneur Scout", layout="wide")
-st.title("🚀 Entrepreneur Scout")
+# ==================== APP CONFIG ====================
+st.set_page_config(page_title="Track Record", layout="wide")
+st.title("📊 Track Record")
+st.markdown("**Find when successful entrepreneurs start or invest in a new company**")
 
 # ==================== SOURCES ====================
 RSS_FEEDS = {
@@ -26,6 +28,11 @@ RSS_FEEDS = {
 }
 
 GOOGLE_SOURCE = "Google News"
+
+# ==================== SIDEBAR ====================
+st.sidebar.header("Controls")
+st.sidebar.caption("Search global startup activity and talent movement")
+months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # ==================== SCRAPING ====================
 @st.cache_data(ttl=3600)
@@ -136,11 +143,8 @@ def fetch_google(query, months):
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m&hl=en-AU&gl=AU&ceid=AU:en"
     return feedparser.parse(url).entries[:30]
 
-# ==================== UI ====================
-months = st.sidebar.slider("Lookback (months)", 1, 12, 3)
-
 # ==================== MAIN ====================
-if st.button("🚀 Run Discovery"):
+if st.button("🔍 Search"):
 
     queries = [
         "startup raises funding",
@@ -182,7 +186,6 @@ if st.button("🚀 Run Discovery"):
             if not companies:
                 continue
 
-            # 🚨 kill spam sentences
             if len(companies) > 2:
                 continue
 
