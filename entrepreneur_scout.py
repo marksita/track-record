@@ -6,10 +6,24 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
+# ==================== OPTIONAL NER ====================
+USE_NER = False
+try:
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
+    USE_NER = True
+except:
+    USE_NER = False
+
 # ==================== APP CONFIG ====================
 st.set_page_config(page_title="Track Record", layout="wide")
 st.title("📊 Track Record")
 st.markdown("**Find when successful entrepreneurs start or invest in a new company**")
+
+# ==================== SIDEBAR ====================
+st.sidebar.header("Track Record")
+st.sidebar.markdown("Find when successful entrepreneurs start or invest in a new company")
+months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # ==================== SOURCES ====================
 RSS_FEEDS = {
@@ -28,11 +42,6 @@ RSS_FEEDS = {
 }
 
 GOOGLE_SOURCE = "Google News"
-
-# ==================== SIDEBAR ====================
-st.sidebar.header("Track Record")
-st.sidebar.markdown("Find when successful entrepreneurs start or invest in a new company")
-months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # ==================== SCRAPING ====================
 @st.cache_data(ttl=3600)
@@ -67,7 +76,25 @@ def is_roundup(text):
         "dozens of", "many startups", "list of"
     ])
 
-# ==================== EXTRACTION ====================
+# ==================== NER EXTRACTION ====================
+def extract_with_ner(text):
+    companies = set()
+    people = set()
+
+    if not USE_NER:
+        return [], []
+
+    doc = nlp(text)
+
+    for ent in doc.ents:
+        if ent.label_ == "ORG":
+            companies.add(ent.text.strip())
+        elif ent.label_ == "PERSON":
+            people.add(ent.text.strip())
+
+    return list(companies), list(people)
+
+# ==================== REGEX FALLBACK ====================
 BLOCK_WORDS = {
     "Startup", "Company", "Tech", "Legal",
     "Week", "Rounds", "Deals",
@@ -76,56 +103,37 @@ BLOCK_WORDS = {
 }
 
 def is_valid_company(name):
-    return name and len(name) >= 3 and name not in BLOCK_WORDS
+    if not name or len(name) < 3:
+        return False
 
-def extract_companies(text):
-    patterns = [
-        r'([A-Z][A-Za-z0-9&\-\.\']+)\s+(?:raises|lands|secures)',
-        r'(?:joins|joined|appointed)\s+(?:[A-Za-z]+\s+){0,3}?([A-Z][A-Za-z0-9&\-\.\']+)'
-    ]
+    if len(name.split()) == 1 and name.lower() in [
+        "supply", "capital", "ventures", "group"
+    ]:
+        return False
 
-    companies = set()
+    return name not in BLOCK_WORDS
 
-    for p in patterns:
-        matches = re.findall(p, text)
-        for m in matches:
-            name = m[0] if isinstance(m, tuple) else m
-            if is_valid_company(name):
-                companies.add(name)
+def extract_companies_regex(text):
+    pattern = r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s+[A-Z][A-Za-z0-9&\-\.\']+){0,3})\s+(?:raises|lands|secures)'
+    matches = re.findall(pattern, text)
+    return [m.strip() for m in matches if is_valid_company(m)]
 
-    return list(companies)
+def extract_people_regex(text):
+    pattern = r'([A-Z][a-z]+ [A-Z][a-z]+)'
+    return re.findall(pattern, text)
 
-def extract_people(text):
-    people = set()
-
-    patterns = [
-        r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(joins|joined|appointed|hired)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+)\s+(?:as|to become)\s+(CEO|CTO|founder)',
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested|backed|led)'
-    ]
-
-    for p in patterns:
-        matches = re.findall(p, text)
-        for m in matches:
-            people.add(m[0])
-
-    return list(people)
-
+# ==================== BACKGROUNDS ====================
 def extract_backgrounds(text):
     patterns = [
         r'ex[- ]([A-Z][A-Za-z0-9&\-\.\']+)',
         r'former\s+([A-Z][A-Za-z0-9&\-\.\']+)',
         r'previously\s+at\s+([A-Z][A-Za-z0-9&\-\.\']+)'
     ]
-
-    backgrounds = set()
-
+    results = set()
     for p in patterns:
-        matches = re.findall(p, text)
-        for m in matches:
-            backgrounds.add(m)
-
-    return list(backgrounds)
+        for m in re.findall(p, text):
+            results.add(m)
+    return list(results)
 
 def detect_role(text):
     t = text.lower()
@@ -179,8 +187,15 @@ if st.button("🔍 Search"):
             if not strong_signal(sentence):
                 continue
 
-            companies = extract_companies(sentence)
-            people = extract_people(sentence)
+            # 🔥 NER first, fallback to regex
+            companies, people = extract_with_ner(sentence)
+
+            if not companies:
+                companies = extract_companies_regex(sentence)
+
+            if not people:
+                people = extract_people_regex(sentence)
+
             backgrounds = extract_backgrounds(sentence)
 
             if not companies:
@@ -229,19 +244,12 @@ if st.button("🔍 Search"):
     for data in results_dict.values():
         data["Score"] += person_counts.get(data["Entrepreneur"], 0)
 
-        for bg in data["Background"]:
-            if bg in ["Google", "OpenAI", "Stripe", "Meta"]:
-                data["Score"] += 3
-
-    # ==================== FINAL ====================
+    # ==================== OUTPUT ====================
     final_results = []
-
     for data in results_dict.values():
         final_results.append({
             "Entrepreneur": data["Entrepreneur"],
             "Company": data["Company"],
-            "Background": ", ".join(data["Background"]),
-            "Role": data["Role"],
             "Score": data["Score"],
             "Titles": " | ".join(list(data["Titles"])[:3]),
             "Sources": ", ".join(data["Sources"]),
@@ -249,29 +257,18 @@ if st.button("🔍 Search"):
         })
 
     if final_results:
-        df = pd.DataFrame(final_results)
-        df = df.sort_values(by="Score", ascending=False)
+        df = pd.DataFrame(final_results).sort_values(by="Score", ascending=False)
 
-        st.success(f"✅ Found {len(df)} clean, deduplicated results")
+        st.success(f"✅ Found {len(df)} high-quality results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
-            st.markdown(f"**👤 {r['Entrepreneur']}** — *{r['Role']}*")
-
-            if r["Background"]:
-                st.markdown(f"🏆 {r['Background']}")
-
+            st.markdown(f"**👤 {r['Entrepreneur']}**")
             st.markdown(f"🔥 Score: {r['Score']}")
             st.markdown(f"📰 {r['Titles']}")
             st.markdown(f"📡 {r['Sources']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
             st.divider()
-
-        st.download_button(
-            "📥 Download CSV",
-            df.to_csv(index=False).encode(),
-            "results.csv"
-        )
 
     else:
         st.error("No high-quality results found")
