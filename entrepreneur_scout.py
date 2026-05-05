@@ -30,8 +30,8 @@ RSS_FEEDS = {
 GOOGLE_SOURCE = "Google News"
 
 # ==================== SIDEBAR ====================
-st.sidebar.header("Controls")
-st.sidebar.caption("Search global startup activity and talent movement")
+st.sidebar.header("Track Record")
+st.sidebar.markdown("Find when successful entrepreneurs start or invest in a new company")
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # ==================== SCRAPING ====================
