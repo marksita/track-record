@@ -2,7 +2,5 @@ streamlit
 feedparser
 pandas
 requests
-newspaper3k
-lxml[html_clean]
-en_core_web_sm
-openai
+beautifulsoup4
+openai>=1.0.0
