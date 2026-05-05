@@ -41,27 +41,27 @@ Sentence:
         content = response.choices[0].message.content.strip()
         data = json.loads(content)
 
-        if not data.get("entrepreneur") or not data.get("company"):
-            return None, None, None
-
         return (
-            data["entrepreneur"],
-            data["company"],
+            data.get("entrepreneur"),
+            data.get("company"),
             data.get("role")
         )
 
     except:
         return None, None, None
 
+# ==================== REGEX FALLBACK ====================
+def extract_companies_regex(text):
+    pattern = r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s+[A-Z][A-Za-z0-9&\-\.\']+){0,3})\s+(?:raises|lands|secures)'
+    return re.findall(pattern, text)
+
+def extract_people_regex(text):
+    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+
 # ==================== APP CONFIG ====================
 st.set_page_config(page_title="Track Record", layout="wide")
 st.title("📊 Track Record")
 st.markdown("**Find when successful entrepreneurs start or invest in a new company**")
-
-# ==================== SIDEBAR ====================
-st.sidebar.header("Track Record")
-st.sidebar.markdown("Find when successful entrepreneurs start or invest in a new company")
-months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # ==================== SOURCES ====================
 RSS_FEEDS = {
@@ -81,6 +81,22 @@ RSS_FEEDS = {
 
 GOOGLE_SOURCE = "Google News"
 
+# ==================== SIDEBAR ====================
+st.sidebar.header("Track Record")
+st.sidebar.markdown("Find when successful entrepreneurs start or invest in a new company")
+
+months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
+
+# 🔥 NEW: SHOW SOURCES IN SIDEBAR
+st.sidebar.subheader("Sources")
+
+use_google = st.sidebar.checkbox("Google News", value=True)
+
+selected_sources = []
+for source in RSS_FEEDS.keys():
+    if st.sidebar.checkbox(source, value=True):
+        selected_sources.append(source)
+
 # ==================== SCRAPING ====================
 @st.cache_data(ttl=3600)
 def fetch_article_text(url):
@@ -91,22 +107,16 @@ def fetch_article_text(url):
     except:
         return ""
 
-# ==================== SENTENCE SPLIT ====================
+# ==================== TEXT PROCESSING ====================
 def split_sentences(text):
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if len(s.strip()) > 40]
 
-# ==================== FILTERS ====================
 def is_relevant(text):
     return any(k in text.lower() for k in [
         "startup", "funding", "venture",
-        "joins", "appointed", "ceo", "raises"
-    ])
-
-def strong_signal(text):
-    return any(k in text.lower() for k in [
-        "raises", "funding", "joins", "appointed", "hired",
-        "founded", "co-founded", "invested", "backed"
+        "joins", "appointed", "ceo", "raises",
+        "founded", "invested"
     ])
 
 def is_roundup(text):
@@ -115,7 +125,7 @@ def is_roundup(text):
         "dozens of", "many startups", "list of"
     ])
 
-# ==================== BACKGROUND EXTRACTION ====================
+# ==================== BACKGROUND ====================
 def extract_backgrounds(text):
     patterns = [
         r'ex[- ]([A-Z][A-Za-z0-9&\-\.\']+)',
@@ -128,26 +138,17 @@ def extract_backgrounds(text):
             results.add(m.strip())
     return list(results)
 
-# ==================== REPUTATION SCORING ====================
-TOP_COMPANIES = {
-    "Google", "Meta", "Stripe", "OpenAI",
-    "Amazon", "Apple", "Microsoft", "DeepMind"
-}
+# ==================== REPUTATION ====================
+TOP_COMPANIES = {"Google","Meta","Stripe","OpenAI","Amazon","Apple","Microsoft","DeepMind"}
 
 def calculate_reputation(role, backgrounds, appearances):
     score = 0
 
-    # Background boost
     for b in backgrounds:
-        if b in TOP_COMPANIES:
-            score += 5
-        else:
-            score += 2
+        score += 5 if b in TOP_COMPANIES else 2
 
-    # Repeat appearances
     score += appearances * 2
 
-    # Role weighting
     if role == "Founder":
         score += 5
     elif role == "Investor":
@@ -169,11 +170,9 @@ if st.button("🔍 Search"):
     queries = [
         "startup raises funding",
         "startup secures funding",
-        "startup lands investment",
         "joins startup",
         "startup hires CEO",
         "ex Google joins startup",
-        "former Stripe joins startup",
         "founded startup",
         "invested in startup"
     ]
@@ -195,13 +194,22 @@ if st.button("🔍 Search"):
 
         for sentence in sentences:
 
-            if not is_relevant(sentence) or not strong_signal(sentence):
+            if not is_relevant(sentence):
                 continue
 
             entrepreneur, company, role = extract_with_openai(sentence)
 
-            if not entrepreneur or not company or not role:
-                continue
+            # 🔥 FALLBACK
+            if not entrepreneur or not company:
+                companies = extract_companies_regex(sentence)
+                people = extract_people_regex(sentence)
+
+                if not companies or not people:
+                    continue
+
+                entrepreneur = people[0]
+                company = companies[0]
+                role = role if role else "Mentioned"
 
             backgrounds = extract_backgrounds(sentence)
 
@@ -227,12 +235,16 @@ if st.button("🔍 Search"):
                 )
 
     # Google
-    for q in queries:
-        for e in fetch_google(q, months):
-            process(e, GOOGLE_SOURCE)
+    if use_google:
+        for q in queries:
+            for e in fetch_google(q, months):
+                process(e, GOOGLE_SOURCE)
 
     # RSS
     for src, url in RSS_FEEDS.items():
+        if src not in selected_sources:
+            continue
+
         for e in feedparser.parse(url).entries[:30]:
             process(e, src)
 
@@ -246,14 +258,17 @@ if st.button("🔍 Search"):
             appearances
         )
 
-        data["Score"] += rep_score
+        if data["Role"] != "Mentioned":
+            data["Score"] += rep_score + 5
+        else:
+            data["Score"] += rep_score
 
     # ==================== OUTPUT ====================
     if results_dict:
         df = pd.DataFrame(results_dict.values())
         df = df.sort_values(by="Score", ascending=False)
 
-        st.success(f"✅ Found {len(df)} high-signal results")
+        st.success(f"✅ Found {len(df)} results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
@@ -268,11 +283,5 @@ if st.button("🔍 Search"):
             st.markdown(f"[🔗 Read Article]({r['Link']})")
             st.divider()
 
-        st.download_button(
-            "📥 Download CSV",
-            df.to_csv(index=False).encode(),
-            "track_record_results.csv"
-        )
-
     else:
-        st.error("No high-quality entrepreneur activity found")
+        st.error("No results found")
