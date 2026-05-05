@@ -4,3 +4,5 @@ pandas
 requests
 newspaper3k
 lxml[html_clean]
+spacy
+en_core_web_sm
