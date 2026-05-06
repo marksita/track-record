@@ -11,72 +11,109 @@ from concurrent.futures import ThreadPoolExecutor
 
 client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
 
-MAX_ARTICLES = 50
-MAX_SENTENCES = 5
+MAX_ARTICLES = 40
 
-# ==================== TITLE SCORING ====================
-def score_title(title):
-    score = 0
+# =============================
+# SUCCESS SIGNALS
+# =============================
+
+SUCCESS_COMPANIES = {
+    "Google","Meta","OpenAI","Stripe","Amazon",
+    "Microsoft","Apple","DeepMind","Uber",
+    "Airbnb","Sequoia","a16z","Tesla"
+}
+
+ACTION_KEYWORDS = [
+    "founded",
+    "co-founded",
+    "launched",
+    "started",
+    "raised",
+    "backed",
+    "invested",
+    "led round"
+]
+
+# =============================
+# TITLE FILTER
+# =============================
+
+def title_score(title):
     t = title.lower()
+    score = 0
 
-    keywords = [
-        "raises", "funding", "backed", "founded",
-        "launches", "invests", "co-founder",
-        "ex-", "former"
-    ]
-
-    for k in keywords:
+    for k in ACTION_KEYWORDS:
         if k in t:
-            score += 1
+            score += 2
+
+    if "ex-" in t or "former" in t:
+        score += 3
 
     return score
 
-# ==================== REGEX FALLBACK ====================
-def extract_people(text):
-    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+# =============================
+# OPENAI EXTRACTION
+# =============================
 
-def extract_companies(text):
-    return re.findall(r'([A-Z][A-Za-z0-9&\-\.\']+)', text)
-
-# ==================== OPENAI ====================
 @st.cache_data(ttl=86400)
-def extract_batch(sentences):
+def extract_event(text):
     try:
         prompt = f"""
-Extract entrepreneur events.
+Extract ONLY if this is about a successful entrepreneur
+starting or investing in a company.
 
-Return JSON list:
-[{{"entrepreneur":"", "company":"", "role":"Founder/Investor"}}]
+Return JSON:
 
-Sentences:
-{sentences}
+{{
+ "entrepreneur": "...",
+ "background": "...",
+ "company": "...",
+ "action": "Founder or Investor"
+}}
+
+Return nulls if not relevant.
+
+Text:
+{text}
 """
+
         r = client.chat.completions.create(
             model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role":"user","content":prompt}],
             temperature=0
         )
-        return json.loads(r.choices[0].message.content.strip())
-    except:
-        return []
 
-# ==================== SCRAPER ====================
+        return json.loads(r.choices[0].message.content.strip())
+
+    except:
+        return None
+
+# =============================
+# SCRAPER
+# =============================
+
 @st.cache_data(ttl=3600)
 def fetch_text(url):
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:600]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:500]
     except:
         return ""
 
-# ==================== GOOGLE ====================
+# =============================
+# GOOGLE
+# =============================
+
 def fetch_google(query, months):
     q = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:30]
+    return feedparser.parse(url).entries[:25]
 
-# ==================== PARALLEL ====================
+# =============================
+# PARALLEL
+# =============================
+
 def fetch_all(queries, months):
     results = []
 
@@ -87,101 +124,112 @@ def fetch_all(queries, months):
 
     return results
 
-# ==================== APP ====================
+# =============================
+# UI
+# =============================
+
 st.set_page_config(page_title="Track Record", layout="wide")
+
 st.title("📊 Track Record")
-st.markdown("Find when successful entrepreneurs start or invest in a new company")
+st.markdown(
+    "**Find when successful entrepreneurs start or invest in a new company**"
+)
 
-months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
+months = st.sidebar.slider("Lookback (months)",1,12,12)
 
-# ==================== RUN ====================
+# =============================
+# RUN
+# =============================
+
 if st.button("🔍 Search"):
 
     queries = [
-        "startup raises funding",
-        "raises series A",
-        "backed by investors",
-        "founded startup",
-        "invested in startup",
-        "co-founder startup"
+        "ex Google founder raises funding",
+        "former Stripe founder startup",
+        "successful entrepreneur invests in startup",
+        "serial founder launches company",
+        "startup backed by founder",
+        "co-founder launches startup"
     ]
 
     entries = fetch_all(queries, months)
 
-    # ==================== FILTER ====================
     candidates = []
+
     for e in entries:
         title = e.title.split(" - ")[0]
-        s = score_title(title)
+        score = title_score(title)
 
-        if s >= 1:  # 🔥 relaxed
+        if score >= 2:
             candidates.append({
                 "title": title,
                 "link": e.link,
-                "score": s
+                "score": score
             })
 
-    candidates = candidates[:MAX_ARTICLES]
+    candidates = sorted(
+        candidates,
+        key=lambda x: x["score"],
+        reverse=True
+    )[:MAX_ARTICLES]
 
-    st.info(f"⚡ Processing {len(candidates)} articles")
-
-    # ==================== PROCESS ====================
     results = {}
 
     for c in candidates:
 
         text = c["title"]
 
-        # scrape only higher score
-        if c["score"] >= 2:
+        if c["score"] >= 4:
             text += ". " + fetch_text(c["link"])
 
-        sentences = re.split(r'(?<=[.!?])\s+', text)[:MAX_SENTENCES]
+        event = extract_event(text)
 
-        extracted = extract_batch(sentences)
+        if not event:
+            continue
 
-        # ==================== AI RESULTS ====================
-        for item in extracted:
-            person = item.get("entrepreneur")
-            company = item.get("company")
+        entrepreneur = event.get("entrepreneur")
+        company = event.get("company")
+        action = event.get("action")
 
-            if person and company:
-                key = (company, person)
-                results[key] = {
-                    "Company": company,
-                    "Entrepreneur": person,
-                    "Role": item.get("role", "Signal"),
-                    "Title": c["title"],
-                    "Link": c["link"]
-                }
+        if not entrepreneur or not company:
+            continue
 
-        # ==================== FALLBACK ====================
-        if not extracted:
-            people = extract_people(text)
-            companies = extract_companies(text)
+        if action not in ["Founder","Investor"]:
+            continue
 
-            for p in people[:2]:
-                for comp in companies[:2]:
-                    key = (comp, p)
-                    results[key] = {
-                        "Company": comp,
-                        "Entrepreneur": p,
-                        "Role": "Fallback",
-                        "Title": c["title"],
-                        "Link": c["link"]
-                    }
+        key = (entrepreneur, company)
 
-    # ==================== OUTPUT ====================
+        results[key] = {
+            "Entrepreneur": entrepreneur,
+            "Background": event.get("background",""),
+            "Company": company,
+            "Action": action,
+            "Title": c["title"],
+            "Link": c["link"]
+        }
+
+    # =============================
+    # OUTPUT
+    # =============================
+
     if results:
+
         df = pd.DataFrame(results.values())
 
-        st.success(f"✅ Found {len(df)} results")
+        st.success(f"✅ Found {len(df)} entrepreneur moves")
 
         for _, r in df.iterrows():
-            st.markdown(f"### 🏢 {r['Company']}")
-            st.markdown(f"👤 {r['Entrepreneur']} — {r['Role']}")
+
+            st.markdown(f"### 👤 {r['Entrepreneur']}")
+
+            if r["Background"]:
+                st.markdown(f"**Background:** {r['Background']}")
+
+            st.markdown(f"**{r['Action']} → 🏢 {r['Company']}**")
             st.markdown(f"📰 {r['Title']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
+
             st.divider()
+
     else:
-        st.warning("No results found")
+        st.warning("No entrepreneur activity found")
