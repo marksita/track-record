@@ -1,13 +1,12 @@
 import streamlit as st
 import feedparser
-import pandas as pd
 import re
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
-MAX_ARTICLES = 60
+MAX_ARTICLES = 100
 
 # =============================
 # FILTERS
@@ -34,55 +33,42 @@ def clean_company(name):
 def is_valid_person(name):
     parts = name.split()
 
-    if len(parts) != 2:
-        return False
-
-    if not all(p[0].isupper() for p in parts):
-        return False
-
-    if not all(p.isalpha() for p in parts):
-        return False
-
-    if any(p.lower() in STOPWORDS for p in parts):
-        return False
-
-    return True
+    return (
+        len(parts) == 2
+        and all(p[0].isupper() for p in parts)
+        and all(p.isalpha() for p in parts)
+        and not any(p.lower() in STOPWORDS for p in parts)
+    )
 
 def is_company_like(name):
     return any(w in name.lower() for w in INVALID_ENTITIES)
 
 # =============================
-# COMPANY EXTRACTION (FIXED)
+# COMPANY EXTRACTION
 # =============================
 
 def extract_company(text):
 
-    # 1. "startup Lifeforce"
-    m = re.search(
-        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)',
-        text
-    )
+    # "startup Lifeforce"
+    m = re.search(r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
-        company = clean_company(m.group(1))
-        if company and not is_valid_person(company):
-            return company
+        c = clean_company(m.group(1))
+        if c and not is_valid_person(c):
+            return c
 
-    # 2. "Lifeforce, a startup"
-    m = re.search(
-        r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup',
-        text
-    )
+    # "Lifeforce, a startup"
+    m = re.search(r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup', text)
     if m:
-        company = clean_company(m.group(1))
-        if company and not is_valid_person(company):
-            return company
+        c = clean_company(m.group(1))
+        if c and not is_valid_person(c):
+            return c
 
-    # 3. first word fallback (title start)
+    # fallback first word
     m = re.match(r'^([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
-        company = clean_company(m.group(1))
-        if company and not is_valid_person(company):
-            return company
+        c = clean_company(m.group(1))
+        if c and not is_valid_person(c):
+            return c
 
     return None
 
@@ -98,7 +84,7 @@ def extract_patterns(text):
     if not company:
         return results
 
-    # founders list
+    # founded by list
     matches = re.findall(
         r'founded by ([A-Z][a-z]+ [A-Z][a-z]+(?:, [A-Z][a-z]+ [A-Z][a-z]+)*)',
         text
@@ -109,38 +95,26 @@ def extract_patterns(text):
             if is_valid_person(p):
                 results.append((p, company, "Founder"))
 
-    # single founder mention
-    matches = re.findall(
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?founded',
-        text
-    )
+    # single founder
+    matches = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+).*?founded', text)
     for p in matches:
         if is_valid_person(p):
             results.append((p, company, "Founder"))
 
     # backed by
-    matches = re.findall(
-        r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)',
-        text
-    )
+    matches = re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text)
     for p in matches:
         if is_valid_person(p) and not is_company_like(p):
             results.append((p, company, "Investor"))
 
     # led by
-    matches = re.findall(
-        r'led by ([A-Z][a-z]+ [A-Z][a-z]+)',
-        text
-    )
+    matches = re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text)
     for p in matches:
         if is_valid_person(p) and not is_company_like(p):
             results.append((p, company, "Investor"))
 
-    # invests in
-    matches = re.findall(
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backs).*?',
-        text
-    )
+    # invests
+    matches = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backs)', text)
     for p, _ in matches:
         if is_valid_person(p):
             results.append((p, company, "Investor"))
@@ -167,7 +141,7 @@ def fetch_text(url):
 def fetch_google(query, months):
     q = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:30]
+    return feedparser.parse(url).entries[:50]
 
 def fetch_all(queries, months):
     results = []
@@ -186,7 +160,7 @@ st.set_page_config(page_title="Track Record", layout="wide")
 st.title("📊 Track Record")
 st.markdown("Find when successful entrepreneurs start or invest in a new company")
 
-months = st.sidebar.slider("Lookback (months)",1,12,12)
+months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # =============================
 # RUN
@@ -195,13 +169,18 @@ months = st.sidebar.slider("Lookback (months)",1,12,12)
 if st.button("Search"):
 
     queries = [
-        "startup raises funding",
+        "startup founded by",
         "startup backed by",
-        "founded startup",
+        "startup led by founder",
         "co-founded startup",
-        "invested in startup",
-        "led funding round",
-        "startup secures funding"
+        "founded by entrepreneur",
+        "startup raises funding founder",
+        "startup backed by celebrity",
+        "startup backed by founder",
+        "ex Google founder startup",
+        "former Stripe founder startup",
+        "startup launched by founder",
+        "startup raises funding led by founder"
     ]
 
     entries = fetch_all(queries, months)
@@ -213,7 +192,9 @@ if st.button("Search"):
         title = e.title.split(" - ")[0]
         text = title
 
-        if any(k in title.lower() for k in ["raised","founded","backed","invested","funding"]):
+        if any(k in title.lower() for k in [
+            "raised","founded","backed","invested","funding","led","launched"
+        ]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
@@ -228,15 +209,15 @@ if st.button("Search"):
 
             if company not in company_results:
                 company_results[company] = {
-                    "people": [],
+                    "people": set(),
                     "title": title,
                     "link": e.link
                 }
 
-            company_results[company]["people"].append((person, role))
+            company_results[company]["people"].add((person, role))
 
     # =============================
-    # OUTPUT (GROUPED)
+    # OUTPUT
     # =============================
 
     if company_results:
@@ -247,7 +228,7 @@ if st.button("Search"):
 
             st.markdown(f"### 🏢 {company}")
 
-            for person, role in list(set(data["people"])):
+            for person, role in data["people"]:
                 st.markdown(f"👤 {person} — {role}")
 
             st.markdown(f"📰 {data['title']}")
