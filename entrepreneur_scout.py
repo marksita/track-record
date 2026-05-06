@@ -9,6 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 MAX_ARTICLES = 60
 
+# =============================
+# FILTERS
+# =============================
+
 STOPWORDS = {
     "week","wind","supply","legal","group","company",
     "startup","firm","business","tech","data","ai"
@@ -19,42 +23,82 @@ INVALID_ENTITIES = {
 }
 
 def clean_company(name):
+    if not name:
+        return None
     if name.lower() in STOPWORDS:
+        return None
+    if len(name) < 2:
         return None
     return name.strip()
 
 def is_valid_person(name):
     parts = name.split()
-    return (
-        len(parts) == 2
-        and all(p[0].isupper() for p in parts)
-        and all(p.isalpha() for p in parts)
-    )
+
+    if len(parts) != 2:
+        return False
+
+    if not all(p[0].isupper() for p in parts):
+        return False
+
+    if not all(p.isalpha() for p in parts):
+        return False
+
+    if any(p.lower() in STOPWORDS for p in parts):
+        return False
+
+    return True
 
 def is_company_like(name):
     return any(w in name.lower() for w in INVALID_ENTITIES)
 
 # =============================
-# EXTRACTION
+# COMPANY EXTRACTION (FIXED)
+# =============================
+
+def extract_company(text):
+
+    # 1. "startup Lifeforce"
+    m = re.search(
+        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)',
+        text
+    )
+    if m:
+        company = clean_company(m.group(1))
+        if company and not is_valid_person(company):
+            return company
+
+    # 2. "Lifeforce, a startup"
+    m = re.search(
+        r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup',
+        text
+    )
+    if m:
+        company = clean_company(m.group(1))
+        if company and not is_valid_person(company):
+            return company
+
+    # 3. first word fallback (title start)
+    m = re.match(r'^([A-Z][A-Za-z0-9&\-\.\']+)', text)
+    if m:
+        company = clean_company(m.group(1))
+        if company and not is_valid_person(company):
+            return company
+
+    return None
+
+# =============================
+# PATTERN EXTRACTION
 # =============================
 
 def extract_patterns(text):
-    results = []
 
-    # Extract company (multi-word)
-    company_match = re.findall(
-        r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s[A-Z][A-Za-z0-9&\-\.\']+)*)',
-        text
-    )
-    company = None
-    if company_match:
-        company = sorted(company_match, key=lambda x: -len(x.split()))[0]
-        company = clean_company(company)
+    results = []
+    company = extract_company(text)
 
     if not company:
         return results
 
-    # 1. founders list
+    # founders list
     matches = re.findall(
         r'founded by ([A-Z][a-z]+ [A-Z][a-z]+(?:, [A-Z][a-z]+ [A-Z][a-z]+)*)',
         text
@@ -65,23 +109,41 @@ def extract_patterns(text):
             if is_valid_person(p):
                 results.append((p, company, "Founder"))
 
-    # 2. backed by
+    # single founder mention
+    matches = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?founded',
+        text
+    )
+    for p in matches:
+        if is_valid_person(p):
+            results.append((p, company, "Founder"))
+
+    # backed by
     matches = re.findall(
         r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)',
         text
     )
-    for person in matches:
-        if is_valid_person(person) and not is_company_like(person):
-            results.append((person, company, "Investor"))
+    for p in matches:
+        if is_valid_person(p) and not is_company_like(p):
+            results.append((p, company, "Investor"))
 
-    # 3. led by
+    # led by
     matches = re.findall(
         r'led by ([A-Z][a-z]+ [A-Z][a-z]+)',
         text
     )
-    for person in matches:
-        if is_valid_person(person) and not is_company_like(person):
-            results.append((person, company, "Investor"))
+    for p in matches:
+        if is_valid_person(p) and not is_company_like(p):
+            results.append((p, company, "Investor"))
+
+    # invests in
+    matches = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backs).*?',
+        text
+    )
+    for p, _ in matches:
+        if is_valid_person(p):
+            results.append((p, company, "Investor"))
 
     return results
 
@@ -134,22 +196,24 @@ if st.button("Search"):
 
     queries = [
         "startup raises funding",
-        "founded startup",
         "startup backed by",
-        "startup led by founder",
-        "startup co-founded"
+        "founded startup",
+        "co-founded startup",
+        "invested in startup",
+        "led funding round",
+        "startup secures funding"
     ]
 
     entries = fetch_all(queries, months)
 
-    results = {}
+    company_results = {}
 
     for e in entries:
 
         title = e.title.split(" - ")[0]
         text = title
 
-        if any(k in title.lower() for k in ["raised","founded","backed"]):
+        if any(k in title.lower() for k in ["raised","founded","backed","invested","funding"]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
@@ -162,33 +226,33 @@ if st.button("Search"):
             if is_company_like(person):
                 continue
 
-            key = (person, company)
-
-            if key not in results:
-                results[key] = {
-                    "Company": company,
-                    "Entrepreneur": person,
-                    "Role": role,
-                    "Title": title,
-                    "Link": e.link
+            if company not in company_results:
+                company_results[company] = {
+                    "people": [],
+                    "title": title,
+                    "link": e.link
                 }
 
+            company_results[company]["people"].append((person, role))
+
     # =============================
-    # OUTPUT
+    # OUTPUT (GROUPED)
     # =============================
 
-    if results:
+    if company_results:
 
-        df = pd.DataFrame(results.values())
+        st.success(f"Found {len(company_results)} companies")
 
-        st.success(f"Found {len(df)} results")
+        for company, data in company_results.items():
 
-        for _, r in df.iterrows():
+            st.markdown(f"### 🏢 {company}")
 
-            st.markdown(f"### 🏢 {r['Company']}")
-            st.markdown(f"👤 {r['Entrepreneur']} — {r['Role']}")
-            st.markdown(f"📰 {r['Title']}")
-            st.markdown(f"[Read Article]({r['Link']})")
+            for person, role in list(set(data["people"])):
+                st.markdown(f"👤 {person} — {role}")
+
+            st.markdown(f"📰 {data['title']}")
+            st.markdown(f"[Read Article]({data['link']})")
+
             st.divider()
 
     else:
