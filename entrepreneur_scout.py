@@ -16,23 +16,34 @@ MAX_ARTICLES = 400
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # =============================
+# KNOWN ENTREPRENEURS (SEED)
+# =============================
+
+DEFAULT_KNOWN = {
+    "Bill Gates", "Elon Musk", "Sam Altman", "Peter Thiel",
+    "Mark Zuckerberg", "Jeff Bezos", "Reid Hoffman",
+    "Marc Andreessen", "Ben Horowitz", "Naval Ravikant",
+    "Patrick Collison", "John Collison", "Brian Chesky",
+    "Drew Houston", "Daniel Ek", "Evan Spiegel",
+    "Whitney Wolfe", "Melanie Perkins"
+}
+
+if "known_entrepreneurs" not in st.session_state:
+    st.session_state.known_entrepreneurs = set(DEFAULT_KNOWN)
+
+if "entrepreneur_counts" not in st.session_state:
+    st.session_state.entrepreneur_counts = {}
+
+# =============================
 # PERSON FILTER
 # =============================
 
 def is_real_person(name):
     parts = name.split()
-
     if len(parts) != 2:
         return False
 
-    if not all(p[0].isupper() for p in parts):
-        return False
-
-    banned = [
-        "ventures","capital","group","labs","studio",
-        "ai","fund","partners","systems","intelligence"
-    ]
-
+    banned = ["ventures","capital","group","labs","studio","ai","fund"]
     if any(b in name.lower() for b in banned):
         return False
 
@@ -70,12 +81,10 @@ Return JSON:
   ]
 }}
 
-STRICT RULES:
-- Only REAL HUMAN NAMES (first + last)
-- NO companies, NO funds, NO organisations
-- Reject anything like Ventures, Capital, Group, Labs, AI
+STRICT:
+- Only real humans (first + last name)
+- No companies/funds
 - If unsure → exclude
-- If none → return empty list
 
 Text:
 {text}
@@ -87,7 +96,7 @@ Text:
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": "Extract startup founders and investors."},
+                {"role": "system", "content": "Extract founders and investors."},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -98,24 +107,23 @@ Text:
         return {"company": None, "people": []}
 
 # =============================
-# FALLBACK
+# SCORING
 # =============================
 
-def fallback_extract(text):
-    company = None
-    people = []
+def score_person(name, role):
+    score = 0
 
-    m = re.search(r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)', text)
-    if m:
-        company = m.group(1)
+    if name in st.session_state.known_entrepreneurs:
+        score += 50
 
-    names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    score += st.session_state.entrepreneur_counts.get(name, 0) * 10
 
-    for n in names[:2]:
-        if is_real_person(n):
-            people.append({"name": n, "role": "Founder"})
+    if role == "Founder":
+        score += 20
+    elif role == "Investor":
+        score += 15
 
-    return {"company": company, "people": people}
+    return score
 
 # =============================
 # FEEDS
@@ -143,7 +151,6 @@ QUERIES = [
     "startup founded by",
     "startup backed by",
     "startup funding led by",
-    "startup investors include",
     "AI startup raises funding",
     "fintech startup raises funding",
     "SaaS startup raises funding",
@@ -154,6 +161,8 @@ QUERIES = [
 # =============================
 # UI
 # =============================
+
+st.set_page_config(page_title="Track Record", layout="wide")
 
 st.title("📊 Track Record")
 st.markdown("Find when successful entrepreneurs start or invest in a new company")
@@ -169,7 +178,6 @@ if st.button("Search"):
     entries = fetch_all(QUERIES, months)
 
     results = {}
-    seen = set()
 
     for e in entries[:MAX_ARTICLES]:
 
@@ -182,11 +190,6 @@ if st.button("Search"):
         people = data.get("people", [])
 
         if not company:
-            data = fallback_extract(text)
-            company = data.get("company")
-            people = data.get("people", [])
-
-        if not company:
             continue
 
         for p in people:
@@ -197,30 +200,47 @@ if st.button("Search"):
             if not name or not is_real_person(name):
                 continue
 
-            key = (company.lower(), name.lower())
-            if key in seen:
-                continue
-            seen.add(key)
+            # update counts
+            st.session_state.entrepreneur_counts[name] = \
+                st.session_state.entrepreneur_counts.get(name, 0) + 1
+
+            # auto-learn
+            if st.session_state.entrepreneur_counts[name] >= 3:
+                st.session_state.known_entrepreneurs.add(name)
+
+            score = score_person(name, role)
 
             if company not in results:
                 results[company] = {
                     "people": [],
                     "title": title,
-                    "link": e.link
+                    "link": e.link,
+                    "score": 0
                 }
 
-            results[company]["people"].append((name, role))
+            results[company]["people"].append((name, role, score))
+            results[company]["score"] += score
 
-    if results:
+    # =============================
+    # SORT RESULTS
+    # =============================
 
-        st.success(f"Found {len(results)} companies")
+    sorted_results = sorted(results.items(), key=lambda x: x[1]["score"], reverse=True)
 
-        for company, data in results.items():
+    # =============================
+    # OUTPUT
+    # =============================
+
+    if sorted_results:
+
+        st.success(f"Found {len(sorted_results)} companies")
+
+        for company, data in sorted_results:
 
             st.markdown(f"### 🏢 {company}")
 
-            for name, role in data["people"]:
-                st.markdown(f"👤 {name} — {role}")
+            for name, role, score in sorted(data["people"], key=lambda x: x[2], reverse=True):
+                st.markdown(f"👤 {name} — {role} 🔥 {score}")
 
             st.markdown(f"📰 {data['title']}")
             st.markdown(f"[Read Article]({data['link']})")
