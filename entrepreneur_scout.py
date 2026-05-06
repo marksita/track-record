@@ -7,10 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
-# =============================
-# SETTINGS
-# =============================
-MAX_ARTICLES = 40
+MAX_ARTICLES = 50
 
 # =============================
 # CLEANING
@@ -30,67 +27,74 @@ def clean_company(name):
     return name
 
 # =============================
-# PATTERN EXTRACTION (FIXED)
+# CORE PATTERN EXTRACTION
 # =============================
 
 def extract_patterns(text):
     results = []
 
-    # 1. X-backed startup Y  ✅ (FIX)
-    matches = re.findall(
-        r'([A-Z][a-z]+ [A-Z][a-z]+)-backed.*?(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)',
+    # 1. Bill Gates-backed startup AirLoom
+    for person, company in re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+)-backed.*?(?:startup|company)?\s*([A-Z][A-Za-z0-9&\-\.\']+)',
         text
-    )
-    for person, company in matches:
+    ):
         company = clean_company(company)
         if company:
-            results.append({
-                "entrepreneur": person,
-                "company": company,
-                "role": "Investor"
-            })
+            results.append((person, company, "Investor"))
 
-    # 2. startup Y backed by X
-    matches = re.findall(
-        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+).*?backed by.*?([A-Z][a-z]+ [A-Z][a-z]+)',
+    # 2. AirLoom backed by Bill Gates
+    for company, person in re.findall(
+        r'([A-Z][A-Za-z0-9&\-\.\']+).*?(?:backed|funded|supported).*?by.*?([A-Z][a-z]+ [A-Z][a-z]+)',
         text
-    )
-    for company, person in matches:
+    ):
         company = clean_company(company)
         if company:
-            results.append({
-                "entrepreneur": person,
-                "company": company,
-                "role": "Investor"
-            })
+            results.append((person, company, "Investor"))
 
-    # 3. Y raised funding led by X
-    matches = re.findall(
-        r'([A-Z][A-Za-z0-9&\-\.\']+).*?(raised|funding).*?(led by|from).*?([A-Z][a-z]+ [A-Z][a-z]+)',
+    # 3. AirLoom raises funding from Bill Gates
+    for company, person in re.findall(
+        r'([A-Z][A-Za-z0-9&\-\.\']+).*?(?:raises|raised|secures).*?(?:from|led by).*?([A-Z][a-z]+ [A-Z][a-z]+)',
         text
-    )
-    for company, _, _, person in matches:
+    ):
         company = clean_company(company)
         if company:
-            results.append({
-                "entrepreneur": person,
-                "company": company,
-                "role": "Investor"
-            })
+            results.append((person, company, "Investor"))
 
-    # 4. X founded Y
-    matches = re.findall(
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|co-founded|launched|started).*?([A-Z][A-Za-z0-9&\-\.\']+)',
+    # 4. Bill Gates invests in AirLoom
+    for person, company in re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(?:invests in|invested in|backs).*?([A-Z][A-Za-z0-9&\-\.\']+)',
         text
-    )
-    for person, _, company in matches:
+    ):
         company = clean_company(company)
         if company:
-            results.append({
-                "entrepreneur": person,
-                "company": company,
-                "role": "Founder"
-            })
+            results.append((person, company, "Investor"))
+
+    # 5. Bill Gates founded AirLoom
+    for person, company in re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(?:founded|co-founded|launched|started).*?([A-Z][A-Za-z0-9&\-\.\']+)',
+        text
+    ):
+        company = clean_company(company)
+        if company:
+            results.append((person, company, "Founder"))
+
+    return results
+
+# =============================
+# FALLBACK EXTRACTION (SAFETY)
+# =============================
+
+def fallback_extract(text):
+    people = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    companies = re.findall(r'\b[A-Z][A-Za-z0-9&\-\.\']{3,}\b', text)
+
+    results = []
+
+    for p in people[:2]:
+        for c in companies[:3]:
+            c = clean_company(c)
+            if c:
+                results.append((p, c, "Signal"))
 
     return results
 
@@ -103,7 +107,7 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:600]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:500]
     except:
         return ""
 
@@ -114,11 +118,11 @@ def fetch_text(url):
 def fetch_google(query, months):
     q = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:25]
+    return feedparser.parse(url).entries[:30]
 
 def fetch_all(queries, months):
     results = []
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=6) as ex:
         futures = [ex.submit(fetch_google, q, months) for q in queries]
         for f in futures:
             results.extend(f.result())
@@ -133,7 +137,7 @@ st.set_page_config(page_title="Track Record", layout="wide")
 st.title("📊 Track Record")
 st.markdown("**Find when successful entrepreneurs start or invest in a new company**")
 
-months = st.sidebar.slider("Lookback (months)",1,12,12)
+months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # =============================
 # RUN
@@ -147,7 +151,9 @@ if st.button("🔍 Search"):
         "founded startup",
         "co-founded startup",
         "invested in startup",
-        "led funding round"
+        "led funding round",
+        "startup secures funding",
+        "startup raises capital"
     ]
 
     entries = fetch_all(queries, months)
@@ -159,16 +165,17 @@ if st.button("🔍 Search"):
         title = e.title.split(" - ")[0]
         text = title
 
-        # only scrape strong titles
-        if any(k in title.lower() for k in ["raised","founded","backed","invested"]):
+        # only scrape strong signals
+        if any(k in title.lower() for k in ["raised","founded","backed","invested","funding"]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
 
-        for ev in events:
+        # fallback if nothing found
+        if not events:
+            events = fallback_extract(text)
 
-            person = ev["entrepreneur"]
-            company = ev["company"]
+        for person, company, role in events:
 
             if not person or not company:
                 continue
@@ -179,7 +186,7 @@ if st.button("🔍 Search"):
                 results[key] = {
                     "Entrepreneur": person,
                     "Company": company,
-                    "Role": ev["role"],
+                    "Role": role,
                     "Title": title,
                     "Link": e.link
                 }
