@@ -32,15 +32,8 @@ KEYWORDS = [
     "funding","launch","led","investors"
 ]
 
-COMMON_FIRST_NAMES = {
-    "john","mike","sarah","david","alex","james","chris",
-    "daniel","emma","olivia","liam","noah","ava","isabella",
-    "ethan","lucas","tony","serena","bill","elon","mark",
-    "sam","peter","jack","paul","anna","max"
-}
-
 # =============================
-# HELPERS
+# PERSON VALIDATION (FIXED)
 # =============================
 
 def is_valid_person(name):
@@ -55,13 +48,12 @@ def is_valid_person(name):
     if not all(p.isalpha() for p in parts):
         return False
 
+    # block company-like words
     if any(p.lower() in COMPANY_WORDS for p in parts):
         return False
 
+    # block location / generic
     if any(p.lower() in GENERIC_WORDS for p in parts):
-        return False
-
-    if parts[0].lower() not in COMMON_FIRST_NAMES:
         return False
 
     return True
@@ -95,7 +87,7 @@ def extract_people(text):
     return list(set([c for c in candidates if is_valid_person(c)]))
 
 # =============================
-# EVENT EXTRACTION (EXPANDED)
+# EVENT EXTRACTION
 # =============================
 
 def extract_events(text):
@@ -107,32 +99,28 @@ def extract_events(text):
     people = extract_people(text)
     results = []
 
-    # founded by
+    # founder patterns
     for p in re.findall(r'founded by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Founder"))
 
-    # co-founded by
     for p in re.findall(r'co-founded by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Founder"))
 
-    # backed by
+    # investor patterns
     for p in re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # hyphen-backed
     for p in re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)-backed', text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # led by
     for p in re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # investors include
     for p in re.findall(r'investors include ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Investor"))
