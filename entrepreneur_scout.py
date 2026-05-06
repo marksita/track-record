@@ -7,11 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 import json
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# =============================
+# CONFIG
+# =============================
 
 MAX_ARTICLES = 200
+KEYWORDS = ["founded", "backed", "raises", "funding", "led", "investors"]
 
-KEYWORDS = ["founded", "backed", "raises", "funding", "led"]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # =============================
 # FETCH ARTICLE TEXT
@@ -27,7 +30,7 @@ def fetch_text(url):
         return ""
 
 # =============================
-# OPENAI EXTRACTION
+# OPENAI EXTRACTION (FIXED)
 # =============================
 
 @st.cache_data(ttl=3600)
@@ -36,7 +39,7 @@ def extract_with_openai(text):
     prompt = f"""
 Extract startup activity.
 
-Return JSON only:
+Return JSON:
 
 {{
   "company": "company name",
@@ -46,10 +49,9 @@ Return JSON only:
 }}
 
 Rules:
-- Only include REAL people (no firms, no locations)
-- Only include if clearly involved in founding or investing
-- If none, return empty list
-- Be precise
+- Only include REAL people (not firms, not locations)
+- Only include if clearly founder or investor
+- If none found, return: {{"company": null, "people": []}}
 
 Text:
 {text}
@@ -59,18 +61,31 @@ Text:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
-            messages=[{"role": "user", "content": prompt}]
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You extract startup founders and investors."},
+                {"role": "user", "content": prompt}
+            ]
         )
 
         content = response.choices[0].message.content
+        data = json.loads(content)
 
-        return json.loads(content)
+        # safety validation
+        if not isinstance(data, dict):
+            return {"company": None, "people": []}
 
-    except:
+        if "company" not in data or "people" not in data:
+            return {"company": None, "people": []}
+
+        return data
+
+    except Exception as e:
+        print("OpenAI error:", e)
         return {"company": None, "people": []}
 
 # =============================
-# FEEDS
+# NEWS FEEDS
 # =============================
 
 def fetch_google(query, months):
@@ -98,7 +113,7 @@ st.markdown("Find when successful entrepreneurs start or invest in a new company
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # =============================
-# RUN
+# RUN SEARCH
 # =============================
 
 if st.button("Search"):
@@ -110,7 +125,9 @@ if st.button("Search"):
         "startup funding led by",
         "startup investors include",
         "AI startup raises",
-        "fintech startup raises"
+        "fintech startup raises",
+        "seed funding startup",
+        "series A startup"
     ]
 
     entries = fetch_all(queries, months)
@@ -122,6 +139,7 @@ if st.button("Search"):
 
         title = e.title.split(" - ")[0]
 
+        # quick filter before OpenAI call (performance)
         if not any(k in title.lower() for k in KEYWORDS):
             continue
 
@@ -132,12 +150,16 @@ if st.button("Search"):
         company = data.get("company")
         people = data.get("people", [])
 
-        if not company or not people:
+        # allow company even if only 1 person later
+        if not company:
             continue
 
         for p in people:
             name = p.get("name")
             role = p.get("role")
+
+            if not name or not role:
+                continue
 
             key = (company.lower(), name.lower())
             if key in seen:
