@@ -11,30 +11,34 @@ from concurrent.futures import ThreadPoolExecutor
 
 client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
 
-MAX_ARTICLES = 40
+MAX_ARTICLES = 50
 MAX_SENTENCES = 5
 
-# ==================== FAST TITLE SCORING ====================
+# ==================== TITLE SCORING ====================
 def score_title(title):
     score = 0
     t = title.lower()
 
     keywords = [
         "raises", "funding", "backed", "founded",
-        "launches", "invests", "led by",
-        "ex-", "former", "co-founder"
+        "launches", "invests", "co-founder",
+        "ex-", "former"
     ]
 
     for k in keywords:
         if k in t:
-            score += 2
-
-    if "series" in t:
-        score += 2
+            score += 1
 
     return score
 
-# ==================== OPENAI BATCH ====================
+# ==================== REGEX FALLBACK ====================
+def extract_people(text):
+    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+
+def extract_companies(text):
+    return re.findall(r'([A-Z][A-Za-z0-9&\-\.\']+)', text)
+
+# ==================== OPENAI ====================
 @st.cache_data(ttl=86400)
 def extract_batch(sentences):
     try:
@@ -42,9 +46,7 @@ def extract_batch(sentences):
 Extract entrepreneur events.
 
 Return JSON list:
-[
-{{"entrepreneur":"", "company":"", "role":"Founder/Investor"}}
-]
+[{{"entrepreneur":"", "company":"", "role":"Founder/Investor"}}]
 
 Sentences:
 {sentences}
@@ -64,7 +66,7 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=5)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:800]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:600]
     except:
         return ""
 
@@ -74,15 +76,12 @@ def fetch_google(query, months):
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
     return feedparser.parse(url).entries[:30]
 
-# ==================== PARALLEL FETCH ====================
+# ==================== PARALLEL ====================
 def fetch_all(queries, months):
     results = []
 
-    def task(q):
-        return fetch_google(q, months)
-
     with ThreadPoolExecutor(max_workers=5) as ex:
-        futures = [ex.submit(task, q) for q in queries]
+        futures = [ex.submit(fetch_google, q, months) for q in queries]
         for f in futures:
             results.extend(f.result())
 
@@ -104,30 +103,27 @@ if st.button("🔍 Search"):
         "backed by investors",
         "founded startup",
         "invested in startup",
-        "ex Google startup",
-        "former Stripe startup"
+        "co-founder startup"
     ]
 
-    # ==================== FETCH ====================
     entries = fetch_all(queries, months)
 
-    # ==================== SCORE & FILTER ====================
+    # ==================== FILTER ====================
     candidates = []
     for e in entries:
         title = e.title.split(" - ")[0]
         s = score_title(title)
 
-        if s >= 2:
+        if s >= 1:  # 🔥 relaxed
             candidates.append({
                 "title": title,
                 "link": e.link,
                 "score": s
             })
 
-    # top articles only
-    candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)[:MAX_ARTICLES]
+    candidates = candidates[:MAX_ARTICLES]
 
-    st.info(f"⚡ Processing {len(candidates)} high-quality articles")
+    st.info(f"⚡ Processing {len(candidates)} articles")
 
     # ==================== PROCESS ====================
     results = {}
@@ -136,36 +132,50 @@ if st.button("🔍 Search"):
 
         text = c["title"]
 
-        # scrape only top tier
-        if c["score"] >= 4:
+        # scrape only higher score
+        if c["score"] >= 2:
             text += ". " + fetch_text(c["link"])
 
         sentences = re.split(r'(?<=[.!?])\s+', text)[:MAX_SENTENCES]
 
         extracted = extract_batch(sentences)
 
+        # ==================== AI RESULTS ====================
         for item in extracted:
             person = item.get("entrepreneur")
             company = item.get("company")
 
-            if not person or not company:
-                continue
+            if person and company:
+                key = (company, person)
+                results[key] = {
+                    "Company": company,
+                    "Entrepreneur": person,
+                    "Role": item.get("role", "Signal"),
+                    "Title": c["title"],
+                    "Link": c["link"]
+                }
 
-            key = (company, person)
+        # ==================== FALLBACK ====================
+        if not extracted:
+            people = extract_people(text)
+            companies = extract_companies(text)
 
-            results[key] = {
-                "Company": company,
-                "Entrepreneur": person,
-                "Role": item.get("role", "Signal"),
-                "Title": c["title"],
-                "Link": c["link"]
-            }
+            for p in people[:2]:
+                for comp in companies[:2]:
+                    key = (comp, p)
+                    results[key] = {
+                        "Company": comp,
+                        "Entrepreneur": p,
+                        "Role": "Fallback",
+                        "Title": c["title"],
+                        "Link": c["link"]
+                    }
 
     # ==================== OUTPUT ====================
     if results:
         df = pd.DataFrame(results.values())
 
-        st.success(f"✅ Found {len(df)} high-quality results")
+        st.success(f"✅ Found {len(df)} results")
 
         for _, r in df.iterrows():
             st.markdown(f"### 🏢 {r['Company']}")
