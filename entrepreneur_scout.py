@@ -18,16 +18,21 @@ INVALID_ENTITIES = {
     "angels","studios"
 }
 
-# NEW: blocks company-like words
 COMPANY_WORDS = {
     "ai","labs","lab","systems","technologies",
     "tech","intelligence","solutions","platform",
-    "robotics"
+    "robotics","fintech"
 }
 
 BAD_SUFFIXES = {
     "capital","ventures","studios","angels",
     "partners","group","fund"
+}
+
+# NEW: nationality / descriptor words
+BAD_PREFIXES = {
+    "italian","french","german","british","european",
+    "american","indian","chinese","startup","fintech","ai"
 }
 
 KEYWORDS = [
@@ -45,14 +50,19 @@ def is_valid_person(name):
     if len(parts) != 2:
         return False
 
+    # must be proper capitalized words
     if not all(p[0].isupper() for p in parts):
         return False
 
     if not all(p.isalpha() for p in parts):
         return False
 
-    # block company-like words
+    # ❌ block company-like words
     if any(p.lower() in COMPANY_WORDS for p in parts):
+        return False
+
+    # ❌ block "Italian Fin" type
+    if parts[0].lower() in BAD_PREFIXES:
         return False
 
     return True
@@ -66,22 +76,22 @@ def is_bad_entity(name):
     return False
 
 # =============================
-# COMPANY EXTRACTION (IMPROVED)
+# COMPANY EXTRACTION (FIXED)
 # =============================
 
 def extract_company(text):
 
-    # "Solve Intelligence raises"
-    m = re.search(r'([A-Z][A-Za-z0-9&\-\s]+?)\s+(raises|raised|secures)', text)
-    if m:
-        return m.group(1).strip()
-
-    # "startup X"
+    # "startup Sibill"
     m = re.search(r'startup\s+([A-Z][A-Za-z0-9&\-]+)', text)
     if m:
         return m.group(1)
 
-    # "X, a startup"
+    # "Sibill raises"
+    m = re.search(r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)', text)
+    if m:
+        return m.group(1)
+
+    # "Sibill, a startup"
     m = re.search(r'([A-Z][A-Za-z0-9&\-]+),?\s+(?:a|an)\s+startup', text)
     if m:
         return m.group(1)
@@ -89,7 +99,7 @@ def extract_company(text):
     return None
 
 # =============================
-# PERSON EXTRACTION
+# PERSON EXTRACTION (FIXED)
 # =============================
 
 def extract_people(text):
@@ -217,7 +227,7 @@ if st.button("Search"):
 
         for person, company, role in events:
 
-            # 🚨 critical fix
+            # prevent company == person
             if person.lower() == company.lower():
                 continue
 
