@@ -16,7 +16,30 @@ MAX_ARTICLES = 400
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # =============================
-# FETCH ARTICLE TEXT
+# PERSON FILTER
+# =============================
+
+def is_real_person(name):
+    parts = name.split()
+
+    if len(parts) != 2:
+        return False
+
+    if not all(p[0].isupper() for p in parts):
+        return False
+
+    banned = [
+        "ventures","capital","group","labs","studio",
+        "ai","fund","partners","systems","intelligence"
+    ]
+
+    if any(b in name.lower() for b in banned):
+        return False
+
+    return True
+
+# =============================
+# FETCH TEXT
 # =============================
 
 @st.cache_data(ttl=3600)
@@ -47,10 +70,12 @@ Return JSON:
   ]
 }}
 
-Rules:
-- Only real people (no firms, no locations)
-- Include if likely founder or investor
-- If none, return: {{"company": null, "people": []}}
+STRICT RULES:
+- Only REAL HUMAN NAMES (first + last)
+- NO companies, NO funds, NO organisations
+- Reject anything like Ventures, Capital, Group, Labs, AI
+- If unsure → exclude
+- If none → return empty list
 
 Text:
 {text}
@@ -67,19 +92,13 @@ Text:
             ]
         )
 
-        data = json.loads(response.choices[0].message.content)
+        return json.loads(response.choices[0].message.content)
 
-        if not isinstance(data, dict):
-            return {"company": None, "people": []}
-
-        return data
-
-    except Exception as e:
-        print("OpenAI error:", e)
+    except:
         return {"company": None, "people": []}
 
 # =============================
-# FALLBACK EXTRACTION
+# FALLBACK
 # =============================
 
 def fallback_extract(text):
@@ -93,12 +112,13 @@ def fallback_extract(text):
     names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
 
     for n in names[:2]:
-        people.append({"name": n, "role": "Founder"})
+        if is_real_person(n):
+            people.append({"name": n, "role": "Founder"})
 
     return {"company": company, "people": people}
 
 # =============================
-# NEWS FETCHING
+# FEEDS
 # =============================
 
 def fetch_google(query, months):
@@ -115,76 +135,25 @@ def fetch_all(queries, months):
     return results
 
 # =============================
-# QUERY ENGINE (EXPANDED)
+# QUERIES
 # =============================
 
 QUERIES = [
-
-    # funding
     "startup raises funding",
-    "startup raises seed",
-    "startup raises series A",
-    "startup raises series B",
-    "startup secures funding",
-    "startup closes funding round",
-
-    # founder
     "startup founded by",
-    "startup co-founded by",
-    "founded by entrepreneur",
-    "launched by entrepreneur",
-
-    # investor
     "startup backed by",
-    "startup backed by investor",
     "startup funding led by",
-    "investors include startup",
-
-    # elite
-    "startup backed by Bill Gates",
-    "startup backed by Elon Musk",
-    "startup backed by Peter Thiel",
-    "startup backed by Sam Altman",
-
-    # VC
-    "startup backed by Sequoia",
-    "startup backed by Andreessen Horowitz",
-    "startup backed by Tiger Global",
-    "startup backed by SoftBank",
-
-    # experience
-    "former Google founder startup",
-    "ex Meta founder startup",
-    "former Amazon founder startup",
-
-    # industries
+    "startup investors include",
     "AI startup raises funding",
     "fintech startup raises funding",
     "SaaS startup raises funding",
-    "biotech startup raises funding",
-    "climate startup raises funding",
-
-    # global
-    "European startup raises funding",
-    "UK startup raises funding",
-    "US startup raises funding",
-    "India startup raises funding",
-
-    # variants
-    "raises $ million startup",
-    "raises funding led by",
-    "startup raises capital",
-
-    # discovery
-    "new startup raises funding",
-    "startup secures investment",
+    "startup raises seed",
+    "startup raises series A",
 ]
 
 # =============================
 # UI
 # =============================
-
-st.set_page_config(page_title="Track Record", layout="wide")
 
 st.title("📊 Track Record")
 st.markdown("Find when successful entrepreneurs start or invest in a new company")
@@ -192,7 +161,7 @@ st.markdown("Find when successful entrepreneurs start or invest in a new company
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 # =============================
-# RUN SEARCH
+# RUN
 # =============================
 
 if st.button("Search"):
@@ -212,13 +181,12 @@ if st.button("Search"):
         company = data.get("company")
         people = data.get("people", [])
 
-        # fallback if OpenAI misses
         if not company:
             data = fallback_extract(text)
             company = data.get("company")
             people = data.get("people", [])
 
-        if not company or not people:
+        if not company:
             continue
 
         for p in people:
@@ -226,7 +194,7 @@ if st.button("Search"):
             name = p.get("name")
             role = p.get("role")
 
-            if not name:
+            if not name or not is_real_person(name):
                 continue
 
             key = (company.lower(), name.lower())
@@ -242,10 +210,6 @@ if st.button("Search"):
                 }
 
             results[company]["people"].append((name, role))
-
-    # =============================
-    # OUTPUT
-    # =============================
 
     if results:
 
