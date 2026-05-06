@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
-MAX_ARTICLES = 100
+MAX_ARTICLES = 120
 
 # =============================
 # FILTERS
@@ -26,13 +26,10 @@ def clean_company(name):
         return None
     if name.lower() in STOPWORDS:
         return None
-    if len(name) < 2:
-        return None
     return name.strip()
 
 def is_valid_person(name):
     parts = name.split()
-
     return (
         len(parts) == 2
         and all(p[0].isupper() for p in parts)
@@ -49,21 +46,18 @@ def is_company_like(name):
 
 def extract_company(text):
 
-    # "startup Lifeforce"
     m = re.search(r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # "Lifeforce, a startup"
     m = re.search(r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # fallback first word
     m = re.match(r'^([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
         c = clean_company(m.group(1))
@@ -71,6 +65,31 @@ def extract_company(text):
             return c
 
     return None
+
+# =============================
+# PERSON DISCOVERY
+# =============================
+
+def extract_people(text):
+    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+
+def score_person(text, person):
+    score = 0
+    t = text.lower()
+
+    if person.lower() in t:
+        score += 1
+
+    if "founded" in t:
+        score += 3
+
+    if "backed" in t or "invested" in t:
+        score += 2
+
+    if any(x in t for x in ["ex-google", "former google", "ex-stripe", "openai"]):
+        score += 5
+
+    return score
 
 # =============================
 # PATTERN EXTRACTION
@@ -84,7 +103,7 @@ def extract_patterns(text):
     if not company:
         return results
 
-    # founded by list
+    # founders
     matches = re.findall(
         r'founded by ([A-Z][a-z]+ [A-Z][a-z]+(?:, [A-Z][a-z]+ [A-Z][a-z]+)*)',
         text
@@ -95,28 +114,14 @@ def extract_patterns(text):
             if is_valid_person(p):
                 results.append((p, company, "Founder"))
 
-    # single founder
-    matches = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+).*?founded', text)
-    for p in matches:
-        if is_valid_person(p):
-            results.append((p, company, "Founder"))
-
     # backed by
-    matches = re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    for p in matches:
+    for p in re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if is_valid_person(p) and not is_company_like(p):
             results.append((p, company, "Investor"))
 
     # led by
-    matches = re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    for p in matches:
+    for p in re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if is_valid_person(p) and not is_company_like(p):
-            results.append((p, company, "Investor"))
-
-    # invests
-    matches = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backs)', text)
-    for p, _ in matches:
-        if is_valid_person(p):
             results.append((p, company, "Investor"))
 
     return results
@@ -141,7 +146,7 @@ def fetch_text(url):
 def fetch_google(query, months):
     q = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:50]
+    return feedparser.parse(url).entries[:60]
 
 def fetch_all(queries, months):
     results = []
@@ -168,33 +173,63 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 if st.button("Search"):
 
-    queries = [
+    base_queries = [
         "startup founded by",
         "startup backed by",
         "startup led by founder",
         "co-founded startup",
-        "founded by entrepreneur",
-        "startup raises funding founder",
-        "startup backed by celebrity",
-        "startup backed by founder",
-        "ex Google founder startup",
-        "former Stripe founder startup",
-        "startup launched by founder",
-        "startup raises funding led by founder"
+        "startup raises funding founder"
     ]
 
-    entries = fetch_all(queries, months)
+    entries = fetch_all(base_queries, months)
+
+    # =============================
+    # AUTO DISCOVERY (PASS 1)
+    # =============================
+
+    person_scores = {}
+
+    for e in entries:
+        title = e.title.split(" - ")[0]
+        text = title + ". " + fetch_text(e.link)
+
+        people = extract_people(text)
+
+        for p in people:
+            if not is_valid_person(p):
+                continue
+
+            s = score_person(text, p)
+            person_scores[p] = person_scores.get(p, 0) + s
+
+    # top discovered entrepreneurs
+    top_people = [p for p, s in person_scores.items() if s >= 5][:15]
+
+    # =============================
+    # SECOND PASS SEARCH
+    # =============================
+
+    extra_queries = []
+
+    for p in top_people:
+        extra_queries.append(f"{p} startup")
+        extra_queries.append(f"{p} founded startup")
+        extra_queries.append(f"{p} backed startup")
+
+    entries.extend(fetch_all(extra_queries, months))
+
+    # =============================
+    # FINAL EXTRACTION
+    # =============================
 
     company_results = {}
 
-    for e in entries:
+    for e in entries[:MAX_ARTICLES]:
 
         title = e.title.split(" - ")[0]
         text = title
 
-        if any(k in title.lower() for k in [
-            "raised","founded","backed","invested","funding","led","launched"
-        ]):
+        if any(k in title.lower() for k in ["raised","founded","backed","funding","led"]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
