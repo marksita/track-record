@@ -19,12 +19,17 @@ STOPWORDS = {
 
 INVALID_ENTITIES = {
     "partners","capital","ventures","vc","fund","investors",
-    "global","management","group","holdings","equity"
+    "global","management","group","holdings","equity","angels"
 }
 
 KNOWN_FUNDS = {
     "Tiger Global","Sequoia Capital","Andreessen Horowitz",
     "Accel","Benchmark","SoftBank","Kleiner Perkins"
+}
+
+BAD_PERSON_WORDS = {
+    "former","engineer","angels","capital","ventures",
+    "raises","funding","group","partners"
 }
 
 ELITE_KEYWORDS = [
@@ -55,6 +60,9 @@ def is_valid_person(name):
         and not any(p.lower() in STOPWORDS for p in parts)
     )
 
+def is_clean_person(name):
+    return not any(w in name.lower() for w in BAD_PERSON_WORDS)
+
 def is_company_like(name):
     if name in KNOWN_FUNDS:
         return True
@@ -70,32 +78,51 @@ def has_elite_signal(text):
 
 def extract_company(text):
 
+    # startup Lifeforce
     m = re.search(r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
+    # Lifeforce, a startup
     m = re.search(r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    for w in text.split():
-        if w[0].isupper() and not is_valid_person(w):
-            c = clean_company(w)
-            if c:
+    # fallback: first clean capitalized word
+    for word in text.split():
+        if word[0].isupper():
+            c = clean_company(word)
+            if c and not is_valid_person(c):
                 return c
 
     return None
 
 # =============================
-# EXTRACTION
+# PERSON EXTRACTION
 # =============================
 
 def extract_people(text):
-    return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+    candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+
+    filtered = []
+    for c in candidates:
+        if not is_valid_person(c):
+            continue
+        if not is_clean_person(c):
+            continue
+        if is_company_like(c):
+            continue
+        filtered.append(c)
+
+    return filtered
+
+# =============================
+# PATTERN EXTRACTION
+# =============================
 
 def extract_patterns(text):
 
@@ -105,25 +132,38 @@ def extract_patterns(text):
     if not company:
         return results
 
-    # founders
+    # founded by
     for group in re.findall(
         r'founded by ([A-Z][a-z]+ [A-Z][a-z]+(?:, [A-Z][a-z]+ [A-Z][a-z]+)*)',
         text
     ):
-        for p in re.findall(r'[A-Z][a-z]+ [A-Z][a-z]+', group):
-            if is_valid_person(p):
-                results.append((p, company, "Founder"))
+        for p in extract_people(group):
+            results.append((p, company, "Founder"))
 
     # backed by
     for p in re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
-        if is_valid_person(p) and not is_company_like(p):
+        if p in extract_people(p):
             results.append((p, company, "Investor"))
 
-    # elite fallback (KEY UPGRADE)
-    if has_elite_signal(text):
-        for p in extract_people(text):
-            if is_valid_person(p):
-                results.append((p, company, "Founder"))
+    # led by
+    for p in re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
+        if p in extract_people(p):
+            results.append((p, company, "Investor"))
+
+    # =============================
+    # ELITE SIGNAL (FIXED)
+    # =============================
+
+    elite_matches = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(ex-|former ).{0,20}?(google|meta|stripe|openai|deepmind)',
+        text,
+        re.IGNORECASE
+    )
+
+    for match in elite_matches:
+        person = match[0]
+        if person in extract_people(person):
+            results.append((person, company, "Founder"))
 
     return results
 
@@ -174,7 +214,7 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 if st.button("Search"):
 
-    base_queries = [
+    queries = [
         "startup founded by",
         "startup backed by",
         "startup raises funding founder",
@@ -184,7 +224,7 @@ if st.button("Search"):
         "startup launched by founder"
     ]
 
-    entries = fetch_all(base_queries, months)
+    entries = fetch_all(queries, months)
 
     company_results = {}
 
@@ -197,7 +237,7 @@ if st.button("Search"):
 
         valid_people = [
             (p, r) for p, _, r in [(p, c, r) for p, c, r in events]
-            if is_valid_person(p) and not is_company_like(p)
+            if p in extract_people(p)
         ]
 
         if not valid_people:
