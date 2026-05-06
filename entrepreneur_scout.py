@@ -6,20 +6,22 @@ import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
-MAX_ARTICLES = 200
+# =============================
+# CONFIG
+# =============================
+
+MAX_ARTICLES = 500
 
 # =============================
 # FILTERS
 # =============================
 
 COMPANY_WORDS = {
-    "ai","ml","labs","lab","systems","technologies",
-    "tech","intelligence","solutions","platform",
-    "robotics","fintech","capital","ventures",
-    "group","fund","studios"
+    "ai","ml","labs","lab","systems","technologies","tech",
+    "intelligence","solutions","platform","robotics",
+    "fintech","capital","ventures","group","fund","studios"
 }
 
-# NEW: block location / generic phrases
 GENERIC_WORDS = {
     "south","north","east","west","downtown",
     "innovation","social","global","digital"
@@ -27,15 +29,14 @@ GENERIC_WORDS = {
 
 KEYWORDS = [
     "founded","backed","raises","raised",
-    "funding","launch","led"
+    "funding","launch","led","investors"
 ]
 
-# NEW: small whitelist of common first names
 COMMON_FIRST_NAMES = {
-    "john","mike","sarah","david","alex","james",
-    "chris","daniel","emma","olivia","liam",
-    "noah","ava","isabella","ethan","lucas",
-    "tony","serena","bill","elon","mark"
+    "john","mike","sarah","david","alex","james","chris",
+    "daniel","emma","olivia","liam","noah","ava","isabella",
+    "ethan","lucas","tony","serena","bill","elon","mark",
+    "sam","peter","jack","paul","anna","max"
 }
 
 # =============================
@@ -54,20 +55,16 @@ def is_valid_person(name):
     if not all(p.isalpha() for p in parts):
         return False
 
-    # ❌ block company words
     if any(p.lower() in COMPANY_WORDS for p in parts):
         return False
 
-    # ❌ block generic/location phrases
     if any(p.lower() in GENERIC_WORDS for p in parts):
         return False
 
-    # ✅ require human-like name
     if parts[0].lower() not in COMMON_FIRST_NAMES:
         return False
 
     return True
-
 
 # =============================
 # COMPANY EXTRACTION
@@ -75,47 +72,30 @@ def is_valid_person(name):
 
 def extract_company(text):
 
-    # "AdPipe raises"
-    m = re.search(r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)', text)
-    if m:
-        return m.group(1)
+    patterns = [
+        r'startup\s+([A-Z][A-Za-z0-9&\-]+)',
+        r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)',
+        r'([A-Z][A-Za-z0-9&\-]+),?\s+(?:a|an)\s+startup',
+        r'launch(?:es|ed)?\s+([A-Z][A-Za-z0-9&\-]+)'
+    ]
 
-    # "startup X"
-    m = re.search(r'startup\s+([A-Z][A-Za-z0-9&\-]+)', text)
-    if m:
-        return m.group(1)
-
-    # "X, a startup"
-    m = re.search(r'([A-Z][A-Za-z0-9&\-]+),?\s+(?:a|an)\s+startup', text)
-    if m:
-        return m.group(1)
-
-    # "launch X"
-    m = re.search(r'launch(?:es|ed)?\s+([A-Z][A-Za-z0-9&\-]+)', text)
-    if m:
-        return m.group(1)
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return m.group(1)
 
     return None
-
 
 # =============================
 # PERSON EXTRACTION
 # =============================
 
 def extract_people(text):
-
     candidates = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-
-    people = []
-    for c in candidates:
-        if is_valid_person(c):
-            people.append(c)
-
-    return list(set(people))
-
+    return list(set([c for c in candidates if is_valid_person(c)]))
 
 # =============================
-# EVENT EXTRACTION
+# EVENT EXTRACTION (EXPANDED)
 # =============================
 
 def extract_events(text):
@@ -132,18 +112,37 @@ def extract_events(text):
         if p in people:
             results.append((p, company, "Founder"))
 
+    # co-founded by
+    for p in re.findall(r'co-founded by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
+        if p in people:
+            results.append((p, company, "Founder"))
+
     # backed by
     for p in re.findall(r'backed by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # fallback: only if strong signal
+    # hyphen-backed
+    for p in re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)-backed', text):
+        if p in people:
+            results.append((p, company, "Investor"))
+
+    # led by
+    for p in re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
+        if p in people:
+            results.append((p, company, "Investor"))
+
+    # investors include
+    for p in re.findall(r'investors include ([A-Z][a-z]+ [A-Z][a-z]+)', text):
+        if p in people:
+            results.append((p, company, "Investor"))
+
+    # fallback (controlled)
     if not results and people:
         if any(k in text.lower() for k in KEYWORDS):
             results.append((people[0], company, "Founder"))
 
     return results
-
 
 # =============================
 # SCRAPER
@@ -158,7 +157,6 @@ def fetch_text(url):
     except:
         return ""
 
-
 # =============================
 # FEEDS
 # =============================
@@ -166,17 +164,15 @@ def fetch_text(url):
 def fetch_google(query, months):
     q = urllib.parse.quote_plus(query)
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:80]
-
+    return feedparser.parse(url).entries[:150]
 
 def fetch_all(queries, months):
     results = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=10) as ex:
         futures = [ex.submit(fetch_google, q, months) for q in queries]
         for f in futures:
             results.extend(f.result())
     return results
-
 
 # =============================
 # UI
@@ -189,7 +185,6 @@ st.markdown("Find when successful entrepreneurs start or invest in a new company
 
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
-
 # =============================
 # RUN
 # =============================
@@ -197,16 +192,24 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 if st.button("Search"):
 
     queries = [
-        "startup founded by",
-        "startup backed by",
         "startup raises funding founder",
-        "startup raises funding investor",
-        "startup launched by founder"
+        "startup backed by investor",
+        "startup founded by entrepreneur",
+        "startup investors include",
+        "startup funding led by",
+        "startup raises seed round",
+        "startup raises series A",
+        "ex Google founder startup",
+        "former Meta founder startup",
+        "AI startup raises funding",
+        "fintech startup raises funding",
+        "SaaS startup raises funding"
     ]
 
     entries = fetch_all(queries, months)
 
     company_results = {}
+    seen = set()
 
     for e in entries[:MAX_ARTICLES]:
 
@@ -220,9 +223,13 @@ if st.button("Search"):
 
         for person, company, role in events:
 
-            # prevent company == person
             if person.lower() == company.lower():
                 continue
+
+            key = (company.lower(), person.lower())
+            if key in seen:
+                continue
+            seen.add(key)
 
             if company not in company_results:
                 company_results[company] = {
