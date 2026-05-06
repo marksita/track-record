@@ -5,67 +5,94 @@ import re
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
-from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor
-import json
 
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
-
+# =============================
+# SETTINGS
+# =============================
 MAX_ARTICLES = 40
 
 # =============================
-# PATTERN EXTRACTION (CORE)
+# CLEANING
+# =============================
+
+STOPWORDS = {
+    "week","wind","supply","legal","group","company",
+    "startup","firm","business","tech","data","ai"
+}
+
+def clean_company(name):
+    name = name.strip()
+    if name.lower() in STOPWORDS:
+        return None
+    if len(name) < 3:
+        return None
+    return name
+
+# =============================
+# PATTERN EXTRACTION (FIXED)
 # =============================
 
 def extract_patterns(text):
     results = []
 
-    patterns = [
-        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|co-founded|launched|started).*?([A-Z][A-Za-z0-9&\-\.\']+)', "Founder"),
-        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backed|led).*?([A-Z][A-Za-z0-9&\-\.\']+)', "Investor"),
-        (r'([A-Z][A-Za-z0-9&\-\.\']+).*?(raised|funding).*?(from|led by).*?([A-Z][a-z]+ [A-Z][a-z]+)', "Investor")
-    ]
-
-    for pattern, role in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        for m in matches:
-            if role == "Investor" and len(m) == 4:
-                company, _, _, person = m
-            else:
-                person, _, company = m
-
+    # 1. X-backed startup Y  ✅ (FIX)
+    matches = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+)-backed.*?(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)',
+        text
+    )
+    for person, company in matches:
+        company = clean_company(company)
+        if company:
             results.append({
                 "entrepreneur": person,
                 "company": company,
-                "role": role
+                "role": "Investor"
+            })
+
+    # 2. startup Y backed by X
+    matches = re.findall(
+        r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+).*?backed by.*?([A-Z][a-z]+ [A-Z][a-z]+)',
+        text
+    )
+    for company, person in matches:
+        company = clean_company(company)
+        if company:
+            results.append({
+                "entrepreneur": person,
+                "company": company,
+                "role": "Investor"
+            })
+
+    # 3. Y raised funding led by X
+    matches = re.findall(
+        r'([A-Z][A-Za-z0-9&\-\.\']+).*?(raised|funding).*?(led by|from).*?([A-Z][a-z]+ [A-Z][a-z]+)',
+        text
+    )
+    for company, _, _, person in matches:
+        company = clean_company(company)
+        if company:
+            results.append({
+                "entrepreneur": person,
+                "company": company,
+                "role": "Investor"
+            })
+
+    # 4. X founded Y
+    matches = re.findall(
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|co-founded|launched|started).*?([A-Z][A-Za-z0-9&\-\.\']+)',
+        text
+    )
+    for person, _, company in matches:
+        company = clean_company(company)
+        if company:
+            results.append({
+                "entrepreneur": person,
+                "company": company,
+                "role": "Founder"
             })
 
     return results
-
-# =============================
-# OPENAI (OPTIONAL ENRICH)
-# =============================
-
-@st.cache_data(ttl=86400)
-def enrich_with_openai(text):
-    try:
-        prompt = f"""
-Extract entrepreneur background (e.g. ex-Google, former Stripe).
-
-Text:
-{text}
-
-Return JSON:
-{{"background": "..."}}
-"""
-        r = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0
-        )
-        return json.loads(r.choices[0].message.content.strip())
-    except:
-        return {}
 
 # =============================
 # SCRAPER
@@ -116,10 +143,10 @@ if st.button("🔍 Search"):
 
     queries = [
         "startup raises funding",
+        "startup backed by",
         "founded startup",
         "co-founded startup",
         "invested in startup",
-        "backed startup",
         "led funding round"
     ]
 
@@ -132,8 +159,8 @@ if st.button("🔍 Search"):
         title = e.title.split(" - ")[0]
         text = title
 
-        # scrape only strong signals
-        if any(k in title.lower() for k in ["raised","founded","invested","backed"]):
+        # only scrape strong titles
+        if any(k in title.lower() for k in ["raised","founded","backed","invested"]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
@@ -149,14 +176,10 @@ if st.button("🔍 Search"):
             key = (person, company)
 
             if key not in results:
-
-                enrich = enrich_with_openai(text)
-
                 results[key] = {
                     "Entrepreneur": person,
                     "Company": company,
                     "Role": ev["role"],
-                    "Background": enrich.get("background",""),
                     "Title": title,
                     "Link": e.link
                 }
@@ -174,10 +197,6 @@ if st.button("🔍 Search"):
         for _, r in df.iterrows():
 
             st.markdown(f"### 👤 {r['Entrepreneur']}")
-
-            if r["Background"]:
-                st.markdown(f"🏆 {r['Background']}")
-
             st.markdown(f"**{r['Role']} → 🏢 {r['Company']}**")
             st.markdown(f"📰 {r['Title']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
