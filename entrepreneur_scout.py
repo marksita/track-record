@@ -14,20 +14,25 @@ MAX_ARTICLES = 200
 
 INVALID_ENTITIES = {
     "capital","ventures","vc","fund","investors",
-    "global","management","group","holdings","equity","angels","studios"
+    "global","management","group","holdings","equity",
+    "angels","studios"
 }
 
-KNOWN_FUNDS = {
-    "Tiger Global","Sequoia Capital","Andreessen Horowitz",
-    "Accel","Benchmark","SoftBank","Kleiner Perkins"
+# NEW: blocks company-like words
+COMPANY_WORDS = {
+    "ai","labs","lab","systems","technologies",
+    "tech","intelligence","solutions","platform",
+    "robotics"
 }
 
 BAD_SUFFIXES = {
-    "capital","ventures","studios","angels","partners","group","fund"
+    "capital","ventures","studios","angels",
+    "partners","group","fund"
 }
 
 KEYWORDS = [
-    "founded","backed","raises","raised","funding","launch","led"
+    "founded","backed","raises","raised",
+    "funding","launch","led"
 ]
 
 # =============================
@@ -36,15 +41,24 @@ KEYWORDS = [
 
 def is_valid_person(name):
     parts = name.split()
-    return (
-        len(parts) == 2
-        and all(p[0].isupper() for p in parts)
-        and all(p.isalpha() for p in parts)
-    )
+
+    if len(parts) != 2:
+        return False
+
+    if not all(p[0].isupper() for p in parts):
+        return False
+
+    if not all(p.isalpha() for p in parts):
+        return False
+
+    # block company-like words
+    if any(p.lower() in COMPANY_WORDS for p in parts):
+        return False
+
+    return True
+
 
 def is_bad_entity(name):
-    if name in KNOWN_FUNDS:
-        return True
     if any(w in name.lower() for w in INVALID_ENTITIES):
         return True
     if any(name.lower().endswith(s) for s in BAD_SUFFIXES):
@@ -52,15 +66,15 @@ def is_bad_entity(name):
     return False
 
 # =============================
-# COMPANY EXTRACTION (ROBUST)
+# COMPANY EXTRACTION (IMPROVED)
 # =============================
 
 def extract_company(text):
 
-    # "X raises"
-    m = re.search(r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)', text)
+    # "Solve Intelligence raises"
+    m = re.search(r'([A-Z][A-Za-z0-9&\-\s]+?)\s+(raises|raised|secures)', text)
     if m:
-        return m.group(1)
+        return m.group(1).strip()
 
     # "startup X"
     m = re.search(r'startup\s+([A-Z][A-Za-z0-9&\-]+)', text)
@@ -106,7 +120,6 @@ def extract_events(text):
         return []
 
     people = extract_people(text)
-
     results = []
 
     # founded by
@@ -119,10 +132,11 @@ def extract_events(text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # investor mention (fallback)
-    for p in people:
-        if "backed" in text.lower() or "led" in text.lower():
-            results.append((p, company, "Investor"))
+    # investor fallback
+    if not results:
+        for p in people:
+            if "backed" in text.lower() or "led" in text.lower():
+                results.append((p, company, "Investor"))
 
     # founder fallback
     if not results and people:
@@ -201,10 +215,11 @@ if st.button("Search"):
 
         events = extract_events(text)
 
-        if not events:
-            continue
-
         for person, company, role in events:
+
+            # 🚨 critical fix
+            if person.lower() == company.lower():
+                continue
 
             if company not in company_results:
                 company_results[company] = {
