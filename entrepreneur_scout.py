@@ -6,87 +6,66 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
-import json
 from concurrent.futures import ThreadPoolExecutor
+import json
 
 client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", ""))
 
 MAX_ARTICLES = 40
 
 # =============================
-# SUCCESS SIGNALS
+# PATTERN EXTRACTION (CORE)
 # =============================
 
-SUCCESS_COMPANIES = {
-    "Google","Meta","OpenAI","Stripe","Amazon",
-    "Microsoft","Apple","DeepMind","Uber",
-    "Airbnb","Sequoia","a16z","Tesla"
-}
+def extract_patterns(text):
+    results = []
 
-ACTION_KEYWORDS = [
-    "founded",
-    "co-founded",
-    "launched",
-    "started",
-    "raised",
-    "backed",
-    "invested",
-    "led round"
-]
+    patterns = [
+        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(founded|co-founded|launched|started).*?([A-Z][A-Za-z0-9&\-\.\']+)', "Founder"),
+        (r'([A-Z][a-z]+ [A-Z][a-z]+).*?(invested in|backed|led).*?([A-Z][A-Za-z0-9&\-\.\']+)', "Investor"),
+        (r'([A-Z][A-Za-z0-9&\-\.\']+).*?(raised|funding).*?(from|led by).*?([A-Z][a-z]+ [A-Z][a-z]+)', "Investor")
+    ]
 
-# =============================
-# TITLE FILTER
-# =============================
+    for pattern, role in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for m in matches:
+            if role == "Investor" and len(m) == 4:
+                company, _, _, person = m
+            else:
+                person, _, company = m
 
-def title_score(title):
-    t = title.lower()
-    score = 0
+            results.append({
+                "entrepreneur": person,
+                "company": company,
+                "role": role
+            })
 
-    for k in ACTION_KEYWORDS:
-        if k in t:
-            score += 2
-
-    if "ex-" in t or "former" in t:
-        score += 3
-
-    return score
+    return results
 
 # =============================
-# OPENAI EXTRACTION
+# OPENAI (OPTIONAL ENRICH)
 # =============================
 
 @st.cache_data(ttl=86400)
-def extract_event(text):
+def enrich_with_openai(text):
     try:
         prompt = f"""
-Extract ONLY if this is about a successful entrepreneur
-starting or investing in a company.
-
-Return JSON:
-
-{{
- "entrepreneur": "...",
- "background": "...",
- "company": "...",
- "action": "Founder or Investor"
-}}
-
-Return nulls if not relevant.
+Extract entrepreneur background (e.g. ex-Google, former Stripe).
 
 Text:
 {text}
-"""
 
+Return JSON:
+{{"background": "..."}}
+"""
         r = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=0
         )
-
         return json.loads(r.choices[0].message.content.strip())
-
     except:
-        return None
+        return {}
 
 # =============================
 # SCRAPER
@@ -97,7 +76,7 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:500]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:600]
     except:
         return ""
 
@@ -110,18 +89,12 @@ def fetch_google(query, months):
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
     return feedparser.parse(url).entries[:25]
 
-# =============================
-# PARALLEL
-# =============================
-
 def fetch_all(queries, months):
     results = []
-
     with ThreadPoolExecutor(max_workers=5) as ex:
         futures = [ex.submit(fetch_google, q, months) for q in queries]
         for f in futures:
             results.extend(f.result())
-
     return results
 
 # =============================
@@ -131,9 +104,7 @@ def fetch_all(queries, months):
 st.set_page_config(page_title="Track Record", layout="wide")
 
 st.title("📊 Track Record")
-st.markdown(
-    "**Find when successful entrepreneurs start or invest in a new company**"
-)
+st.markdown("**Find when successful entrepreneurs start or invest in a new company**")
 
 months = st.sidebar.slider("Lookback (months)",1,12,12)
 
@@ -144,69 +115,51 @@ months = st.sidebar.slider("Lookback (months)",1,12,12)
 if st.button("🔍 Search"):
 
     queries = [
-        "ex Google founder raises funding",
-        "former Stripe founder startup",
-        "successful entrepreneur invests in startup",
-        "serial founder launches company",
-        "startup backed by founder",
-        "co-founder launches startup"
+        "startup raises funding",
+        "founded startup",
+        "co-founded startup",
+        "invested in startup",
+        "backed startup",
+        "led funding round"
     ]
 
     entries = fetch_all(queries, months)
 
-    candidates = []
-
-    for e in entries:
-        title = e.title.split(" - ")[0]
-        score = title_score(title)
-
-        if score >= 2:
-            candidates.append({
-                "title": title,
-                "link": e.link,
-                "score": score
-            })
-
-    candidates = sorted(
-        candidates,
-        key=lambda x: x["score"],
-        reverse=True
-    )[:MAX_ARTICLES]
-
     results = {}
 
-    for c in candidates:
+    for e in entries:
 
-        text = c["title"]
+        title = e.title.split(" - ")[0]
+        text = title
 
-        if c["score"] >= 4:
-            text += ". " + fetch_text(c["link"])
+        # scrape only strong signals
+        if any(k in title.lower() for k in ["raised","founded","invested","backed"]):
+            text += ". " + fetch_text(e.link)
 
-        event = extract_event(text)
+        events = extract_patterns(text)
 
-        if not event:
-            continue
+        for ev in events:
 
-        entrepreneur = event.get("entrepreneur")
-        company = event.get("company")
-        action = event.get("action")
+            person = ev["entrepreneur"]
+            company = ev["company"]
 
-        if not entrepreneur or not company:
-            continue
+            if not person or not company:
+                continue
 
-        if action not in ["Founder","Investor"]:
-            continue
+            key = (person, company)
 
-        key = (entrepreneur, company)
+            if key not in results:
 
-        results[key] = {
-            "Entrepreneur": entrepreneur,
-            "Background": event.get("background",""),
-            "Company": company,
-            "Action": action,
-            "Title": c["title"],
-            "Link": c["link"]
-        }
+                enrich = enrich_with_openai(text)
+
+                results[key] = {
+                    "Entrepreneur": person,
+                    "Company": company,
+                    "Role": ev["role"],
+                    "Background": enrich.get("background",""),
+                    "Title": title,
+                    "Link": e.link
+                }
 
     # =============================
     # OUTPUT
@@ -216,16 +169,16 @@ if st.button("🔍 Search"):
 
         df = pd.DataFrame(results.values())
 
-        st.success(f"✅ Found {len(df)} entrepreneur moves")
+        st.success(f"✅ Found {len(df)} entrepreneur events")
 
         for _, r in df.iterrows():
 
             st.markdown(f"### 👤 {r['Entrepreneur']}")
 
             if r["Background"]:
-                st.markdown(f"**Background:** {r['Background']}")
+                st.markdown(f"🏆 {r['Background']}")
 
-            st.markdown(f"**{r['Action']} → 🏢 {r['Company']}**")
+            st.markdown(f"**{r['Role']} → 🏢 {r['Company']}**")
             st.markdown(f"📰 {r['Title']}")
             st.markdown(f"[🔗 Read Article]({r['Link']})")
 
