@@ -16,7 +16,7 @@ def extract_with_openai(text):
     try:
         prompt = f"""
 Extract:
-- entrepreneur (person)
+- entrepreneur
 - company
 - role (Founder, Investor, Operator)
 
@@ -37,7 +37,10 @@ Sentence:
 
 # ==================== REGEX ====================
 def extract_companies_regex(text):
-    return re.findall(r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s+[A-Z][A-Za-z0-9&\-\.\']+){0,3})\s+(?:raises|lands|secures|builds|launches)', text)
+    return re.findall(
+        r'([A-Z][A-Za-z0-9&\-\.\']+(?:\s+[A-Z][A-Za-z0-9&\-\.\']+){0,3})',
+        text
+    )
 
 def extract_people_regex(text):
     return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
@@ -94,23 +97,16 @@ def is_relevant(text):
 
 def strong_signal(text):
     return any(k in text.lower() for k in [
-        "raises", "funding", "joins", "appointed",
-        "founded", "invested", "backed", "launches"
+        "raises", "funding", "joins",
+        "founded", "invested", "backed",
+        "launches", "appointed"
     ])
 
 def extract_backgrounds(text):
-    patterns = [
-        r'ex[- ]([A-Z][A-Za-z0-9]+)',
-        r'former\s+([A-Z][A-Za-z0-9]+)'
-    ]
-    results = []
-    for p in patterns:
-        results += [m for m in re.findall(p, text) if m]
-    return list(set(results))
+    return list(set(re.findall(r'ex[- ]([A-Z][A-Za-z0-9]+)|former\s+([A-Z][A-Za-z0-9]+)', text)))
 
 def calculate_reputation(role, backgrounds, appearances):
-    score = appearances * 2
-    score += len(backgrounds) * 3
+    score = appearances * 2 + len(backgrounds) * 3
 
     if role == "Founder":
         score += 5
@@ -121,28 +117,49 @@ def calculate_reputation(role, backgrounds, appearances):
 
     return score
 
+# ==================== GOOGLE MULTI-COUNTRY ====================
+countries = ["", "Australia", "US", "UK", "Europe"]
+
 def fetch_google(query, months):
-    q = urllib.parse.quote_plus(query + " Australia")
-    url = f"https://news.google.com/rss/search?q={q}+when:{months}m&hl=en-AU&gl=AU&ceid=AU:en"
-    return feedparser.parse(url).entries[:50]
+    all_entries = []
+
+    for c in countries:
+        q = urllib.parse.quote_plus(query + " " + c)
+        url = f"https://news.google.com/rss/search?q={q}+when:{months}m&hl=en&gl=US&ceid=US:en"
+        entries = feedparser.parse(url).entries[:20]
+        all_entries.extend(entries)
+
+    return all_entries[:80]
 
 # ==================== MAIN ====================
 if st.button("🔍 Search"):
 
     queries = [
-        "raises funding startup",
+        "raises funding",
+        "raises seed",
         "raises series A",
         "raises series B",
         "secures funding",
+        "closes funding round",
         "lands investment",
-        "backed by investors",
+        "backed by",
+        "led by investors",
         "founded by",
+        "co-founded by",
+        "launches company",
         "launches startup",
-        "ex Google joins",
-        "former Stripe joins",
-        "former OpenAI joins",
-        "appointed CEO startup",
-        "joins as CEO startup"
+        "spins out of",
+        "former Google startup",
+        "ex Meta startup",
+        "former Stripe startup",
+        "former OpenAI startup",
+        "joins startup",
+        "joins as CEO",
+        "appointed CEO",
+        "hires CEO",
+        "new CEO startup",
+        "venture funding",
+        "AI startup raises"
     ]
 
     results = {}
@@ -156,50 +173,47 @@ if st.button("🔍 Search"):
         if strong_signal(title):
             full_text += ". " + fetch_article_text(entry.link)
 
-        sentences = split_sentences(full_text)[:5]
+        sentences = split_sentences(full_text)[:10]
 
         for s in sentences:
             if not is_relevant(s):
                 continue
 
+            person, company, role = (None, None, None)
+
             if strong_signal(s):
                 person, company, role = extract_with_openai(s)
-            else:
-                person, company, role = None, None, None
 
-            # 🔥 relaxed condition (only require company)
-            if not company:
-                companies = extract_companies_regex(s)
-                if not companies:
-                    continue
-                company = companies[0]
+            companies = extract_companies_regex(s)
+            people = extract_people_regex(s)
 
-            # fallback for person
-            if not person:
-                people = extract_people_regex(s)
-                if not people:
-                    continue
-                person = people[0]
+            if not companies:
+                continue
 
-            role = role or "Mentioned"
+            # 🔥 MULTI-ENTITY
+            for c in companies[:2]:
+                for p in (people[:2] if people else [person]):
 
-            counts[person] = counts.get(person, 0) + 1
+                    if not p:
+                        continue
 
-            key = (company, title)
+                    counts[p] = counts.get(p, 0) + 1
 
-            if key not in results:
-                results[key] = {
-                    "Entrepreneur": person,
-                    "Company": company,
-                    "Role": role,
-                    "Score": 1,
-                    "Background": extract_backgrounds(s),
-                    "Title": title,
-                    "Source": source,
-                    "Link": entry.link
-                }
-            else:
-                results[key]["Score"] += 1
+                    key = (c, title, p)
+
+                    if key not in results:
+                        results[key] = {
+                            "Entrepreneur": p,
+                            "Company": c,
+                            "Role": role or "Mentioned",
+                            "Score": 1,
+                            "Background": extract_backgrounds(s),
+                            "Title": title,
+                            "Source": source,
+                            "Link": entry.link
+                        }
+                    else:
+                        results[key]["Score"] += 1
 
     # Google
     if use_google:
@@ -237,7 +251,7 @@ if st.button("🔍 Search"):
             st.markdown(f"🔥 Score: {r['Score']}")
 
             if r["Background"]:
-                st.markdown(f"🏆 Background: {', '.join(r['Background'])}")
+                st.markdown(f"🏆 Background: {', '.join([b for b in r['Background'] if b])}")
 
             st.markdown(f"📰 {r['Title']}")
             st.markdown(f"📡 {r['Source']}")
