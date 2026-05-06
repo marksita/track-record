@@ -28,7 +28,7 @@ KNOWN_FUNDS = {
 }
 
 BAD_PERSON_WORDS = {
-    "former","engineer","angels","capital","ventures",
+    "angels","capital","ventures",
     "raises","funding","group","partners"
 }
 
@@ -78,21 +78,18 @@ def has_elite_signal(text):
 
 def extract_company(text):
 
-    # startup Lifeforce
     m = re.search(r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # Lifeforce, a startup
     m = re.search(r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # fallback: first clean capitalized word
     for word in text.split():
         if word[0].isupper():
             c = clean_company(word)
@@ -151,11 +148,11 @@ def extract_patterns(text):
             results.append((p, company, "Investor"))
 
     # =============================
-    # ELITE SIGNAL (FIXED)
+    # ELITE SIGNAL (RELAXED + SAFE)
     # =============================
 
     elite_matches = re.findall(
-        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(ex-|former ).{0,20}?(google|meta|stripe|openai|deepmind)',
+        r'([A-Z][a-z]+ [A-Z][a-z]+).*?(ex|former).{0,40}?(google|meta|stripe|openai|deepmind)',
         text,
         re.IGNORECASE
     )
@@ -164,6 +161,12 @@ def extract_patterns(text):
         person = match[0]
         if person in extract_people(person):
             results.append((person, company, "Founder"))
+
+    # fallback: elite signal but no match
+    if not results and has_elite_signal(text):
+        people = extract_people(text)
+        if people:
+            results.append((people[0], company, "Founder"))
 
     return results
 
@@ -236,8 +239,10 @@ if st.button("Search"):
         events = extract_patterns(text)
 
         valid_people = [
-            (p, r) for p, _, r in [(p, c, r) for p, c, r in events]
-            if p in extract_people(p)
+            (p, r) for p, _, r in events
+            if is_valid_person(p)
+            and is_clean_person(p)
+            and not is_company_like(p)
         ]
 
         if not valid_people:
