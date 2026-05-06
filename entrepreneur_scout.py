@@ -10,12 +10,13 @@ from concurrent.futures import ThreadPoolExecutor
 MAX_ARTICLES = 50
 
 # =============================
-# CLEANING
+# VALIDATION
 # =============================
 
 STOPWORDS = {
     "week","wind","supply","legal","group","company",
-    "startup","firm","business","tech","data","ai"
+    "startup","firm","business","tech","data","ai",
+    "one","biggest","round","capital","raises"
 }
 
 def clean_company(name):
@@ -26,8 +27,25 @@ def clean_company(name):
         return None
     return name
 
+def is_valid_person(name):
+    parts = name.split()
+
+    if len(parts) != 2:
+        return False
+
+    if not all(p[0].isupper() for p in parts):
+        return False
+
+    if not all(p.isalpha() for p in parts):
+        return False
+
+    if any(p.lower() in STOPWORDS for p in parts):
+        return False
+
+    return True
+
 # =============================
-# CORE PATTERN EXTRACTION
+# PATTERN EXTRACTION
 # =============================
 
 def extract_patterns(text):
@@ -39,7 +57,7 @@ def extract_patterns(text):
         text
     ):
         company = clean_company(company)
-        if company:
+        if company and is_valid_person(person):
             results.append((person, company, "Investor"))
 
     # 2. AirLoom backed by Bill Gates
@@ -48,7 +66,7 @@ def extract_patterns(text):
         text
     ):
         company = clean_company(company)
-        if company:
+        if company and is_valid_person(person):
             results.append((person, company, "Investor"))
 
     # 3. AirLoom raises funding from Bill Gates
@@ -57,7 +75,7 @@ def extract_patterns(text):
         text
     ):
         company = clean_company(company)
-        if company:
+        if company and is_valid_person(person):
             results.append((person, company, "Investor"))
 
     # 4. Bill Gates invests in AirLoom
@@ -66,7 +84,7 @@ def extract_patterns(text):
         text
     ):
         company = clean_company(company)
-        if company:
+        if company and is_valid_person(person):
             results.append((person, company, "Investor"))
 
     # 5. Bill Gates founded AirLoom
@@ -75,26 +93,8 @@ def extract_patterns(text):
         text
     ):
         company = clean_company(company)
-        if company:
+        if company and is_valid_person(person):
             results.append((person, company, "Founder"))
-
-    return results
-
-# =============================
-# FALLBACK EXTRACTION (SAFETY)
-# =============================
-
-def fallback_extract(text):
-    people = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-    companies = re.findall(r'\b[A-Z][A-Za-z0-9&\-\.\']{3,}\b', text)
-
-    results = []
-
-    for p in people[:2]:
-        for c in companies[:3]:
-            c = clean_company(c)
-            if c:
-                results.append((p, c, "Signal"))
 
     return results
 
@@ -165,20 +165,13 @@ if st.button("🔍 Search"):
         title = e.title.split(" - ")[0]
         text = title
 
-        # only scrape strong signals
+        # scrape only strong signals
         if any(k in title.lower() for k in ["raised","founded","backed","invested","funding"]):
             text += ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
 
-        # fallback if nothing found
-        if not events:
-            events = fallback_extract(text)
-
         for person, company, role in events:
-
-            if not person or not company:
-                continue
 
             key = (person, company)
 
