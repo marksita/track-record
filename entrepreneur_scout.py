@@ -16,16 +16,13 @@ MAX_ARTICLES = 400
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # =============================
-# KNOWN ENTREPRENEURS (SEED)
+# KNOWN ENTREPRENEURS
 # =============================
 
 DEFAULT_KNOWN = {
-    "Bill Gates", "Elon Musk", "Sam Altman", "Peter Thiel",
-    "Mark Zuckerberg", "Jeff Bezos", "Reid Hoffman",
-    "Marc Andreessen", "Ben Horowitz", "Naval Ravikant",
-    "Patrick Collison", "John Collison", "Brian Chesky",
-    "Drew Houston", "Daniel Ek", "Evan Spiegel",
-    "Whitney Wolfe", "Melanie Perkins"
+    "Bill Gates","Elon Musk","Sam Altman","Peter Thiel",
+    "Mark Zuckerberg","Jeff Bezos","Reid Hoffman",
+    "Marc Andreessen","Ben Horowitz","Naval Ravikant"
 }
 
 if "known_entrepreneurs" not in st.session_state:
@@ -58,7 +55,7 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:1000]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:1200]
     except:
         return ""
 
@@ -75,16 +72,16 @@ Extract startup activity.
 Return JSON:
 
 {{
-  "company": "company name",
-  "people": [
-    {{"name": "full name", "role": "Founder or Investor"}}
-  ]
+ "company": "company name",
+ "people": [
+   {{"name": "full name", "role": "Founder or Investor"}}
+ ]
 }}
 
-STRICT:
-- Only real humans (first + last name)
-- No companies/funds
-- If unsure → exclude
+Rules:
+- Only real people (first + last)
+- If unsure, still include best guess
+- If none found, return empty list
 
 Text:
 {text}
@@ -93,7 +90,7 @@ Text:
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0,
+            temperature=0.2,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "Extract founders and investors."},
@@ -107,10 +104,53 @@ Text:
         return {"company": None, "people": []}
 
 # =============================
+# FALLBACK EXTRACTION (STRONG)
+# =============================
+
+def fallback_extract(text):
+
+    # company patterns
+    company = None
+    patterns = [
+        r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)',
+        r'startup\s+([A-Z][A-Za-z0-9&\-]+)',
+        r'([A-Z][A-Za-z0-9&\-]+)\s+announced'
+    ]
+
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            company = m.group(1)
+            break
+
+    # people patterns
+    names = re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
+
+    people = []
+    for n in names[:3]:
+        if is_real_person(n):
+            people.append({"name": n, "role": "Founder"})
+
+    return {"company": company, "people": people}
+
+# =============================
+# LAST RESORT (GUARANTEE OUTPUT)
+# =============================
+
+def last_resort(title):
+    words = title.split()
+    company = words[0] if words else "Unknown"
+    return {
+        "company": company,
+        "people": [{"name": "Unknown Founder", "role": "Founder"}]
+    }
+
+# =============================
 # SCORING
 # =============================
 
 def score_person(name, role):
+
     score = 0
 
     if name in st.session_state.known_entrepreneurs:
@@ -147,25 +187,17 @@ def fetch_all(queries, months):
 # =============================
 
 QUERIES = [
-    "startup raises funding",
-    "startup founded by",
-    "startup backed by",
-    "startup funding led by",
-    "AI startup raises funding",
-    "fintech startup raises funding",
-    "SaaS startup raises funding",
-    "startup raises seed",
-    "startup raises series A",
+    "startup raises funding","startup founded by","startup backed by",
+    "startup funding led by","AI startup raises funding",
+    "fintech startup raises funding","SaaS startup raises funding",
+    "startup raises seed","startup raises series A"
 ]
 
 # =============================
 # UI
 # =============================
 
-st.set_page_config(page_title="Track Record", layout="wide")
-
 st.title("📊 Track Record")
-st.markdown("Find when successful entrepreneurs start or invest in a new company")
 
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
@@ -184,27 +216,36 @@ if st.button("Search"):
         title = e.title.split(" - ")[0]
         text = title + ". " + fetch_text(e.link)
 
+        # Tier 1
         data = extract_with_openai(text)
 
         company = data.get("company")
         people = data.get("people", [])
 
+        # Tier 2
+        if not company or not people:
+            data = fallback_extract(text)
+            company = data.get("company")
+            people = data.get("people", [])
+
+        # Tier 3 (guarantee)
         if not company:
-            continue
+            data = last_resort(title)
+            company = data["company"]
+            people = data["people"]
 
         for p in people:
 
             name = p.get("name")
             role = p.get("role")
 
-            if not name or not is_real_person(name):
+            if name != "Unknown Founder" and not is_real_person(name):
                 continue
 
-            # update counts
+            # learning
             st.session_state.entrepreneur_counts[name] = \
                 st.session_state.entrepreneur_counts.get(name, 0) + 1
 
-            # auto-learn
             if st.session_state.entrepreneur_counts[name] >= 3:
                 st.session_state.known_entrepreneurs.add(name)
 
@@ -222,30 +263,21 @@ if st.button("Search"):
             results[company]["score"] += score
 
     # =============================
-    # SORT RESULTS
+    # OUTPUT
     # =============================
 
     sorted_results = sorted(results.items(), key=lambda x: x[1]["score"], reverse=True)
 
-    # =============================
-    # OUTPUT
-    # =============================
+    st.success(f"Found {len(sorted_results)} companies")
 
-    if sorted_results:
+    for company, data in sorted_results:
 
-        st.success(f"Found {len(sorted_results)} companies")
+        st.markdown(f"### 🏢 {company}")
 
-        for company, data in sorted_results:
+        for name, role, score in sorted(data["people"], key=lambda x: x[2], reverse=True):
+            st.markdown(f"👤 {name} — {role} 🔥 {score}")
 
-            st.markdown(f"### 🏢 {company}")
+        st.markdown(f"📰 {data['title']}")
+        st.markdown(f"[Read Article]({data['link']})")
 
-            for name, role, score in sorted(data["people"], key=lambda x: x[2], reverse=True):
-                st.markdown(f"👤 {name} — {role} 🔥 {score}")
-
-            st.markdown(f"📰 {data['title']}")
-            st.markdown(f"[Read Article]({data['link']})")
-
-            st.divider()
-
-    else:
-        st.warning("No entrepreneur activity found")
+        st.divider()
