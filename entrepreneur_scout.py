@@ -12,13 +12,15 @@ import re
 # CONFIG
 # =============================
 
-MAX_ARTICLES = 250   # ↓ reduce = faster
+st.set_page_config(page_title="Founder Signal", layout="wide")
+
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
+MAX_ARTICLES = 200
 KEYWORDS = ["raises","raised","funding","backed","founded","led"]
 
 # =============================
-# PERSON FILTER (STRICT)
+# STRICT VALIDATION
 # =============================
 
 def is_real_person(name):
@@ -34,17 +36,11 @@ def is_real_person(name):
 
     banned = [
         "ventures","capital","group","labs","studio","ai","fund",
-        "this","that","these","those","uk","us","czech"
+        "this","that","uk","us","czech"
     ]
 
-    if any(b in name.lower() for b in banned):
-        return False
+    return not any(b in name.lower() for b in banned)
 
-    return True
-
-# =============================
-# COMPANY CLEANER
-# =============================
 
 def clean_company(name):
     if not name:
@@ -52,11 +48,12 @@ def clean_company(name):
 
     name = name.strip(",. ")
 
-    # remove bad short tokens
     if len(name) < 3:
         return None
 
-    if name.lower() in ["this","in","uk’s","czech"]:
+    bad = ["this","in","uk’s","czech","the"]
+
+    if name.lower() in bad:
         return None
 
     return name
@@ -75,17 +72,16 @@ def fetch_text(url):
         return ""
 
 # =============================
-# OPENAI EXTRACTION (CONTROLLED)
+# OPENAI EXTRACTION
 # =============================
 
 @st.cache_data(ttl=3600)
-def extract_with_openai(text):
+def extract(text):
 
     prompt = f"""
 Extract:
-
-- Company name
-- Real founders or investors (people only)
+- Company
+- Founders or investors (real people only)
 
 Return JSON:
 
@@ -97,16 +93,16 @@ Return JSON:
 }}
 
 Rules:
-- Only real people (first + last name)
-- NO companies, NO funds
-- If none → return empty list
+- ONLY real people
+- NO companies/funds
+- If none → empty list
 
 Text:
 {text}
 """
 
     try:
-        response = client.chat.completions.create(
+        res = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             response_format={"type": "json_object"},
@@ -116,18 +112,16 @@ Text:
             ]
         )
 
-        return json.loads(response.choices[0].message.content)
+        return json.loads(res.choices[0].message.content)
 
     except:
         return {"company": None, "people": []}
 
 # =============================
-# FAST FALLBACK (NO FAKE PEOPLE)
+# FALLBACK (company only)
 # =============================
 
-def fallback_extract(text):
-
-    company = None
+def fallback_company(text):
 
     patterns = [
         r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)',
@@ -137,30 +131,12 @@ def fallback_extract(text):
     for p in patterns:
         m = re.search(p, text)
         if m:
-            company = m.group(1)
-            break
+            return m.group(1)
 
-    return {"company": company, "people": []}  # 🔥 no fake founders
-
-# =============================
-# FEEDS
-# =============================
-
-def fetch_google(query, months):
-    q = urllib.parse.quote_plus(query)
-    url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
-    return feedparser.parse(url).entries[:120]
-
-def fetch_all(queries, months):
-    results = []
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = [ex.submit(fetch_google, q, months) for q in queries]
-        for f in futures:
-            results.extend(f.result())
-    return results
+    return None
 
 # =============================
-# QUERIES
+# FETCH NEWS
 # =============================
 
 QUERIES = [
@@ -174,13 +150,27 @@ QUERIES = [
     "fintech startup raises funding",
 ]
 
+def fetch_google(q, months):
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote_plus(q)}+when:{months}m"
+    return feedparser.parse(url).entries[:100]
+
+
+def fetch_all(months):
+    results = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(fetch_google, q, months) for q in QUERIES]
+        for f in futures:
+            results.extend(f.result())
+    return results
+
 # =============================
 # UI
 # =============================
 
-st.title("📊 Track Record")
+st.title("📊 Founder Signal")
+st.markdown("Find when successful entrepreneurs start or invest in new companies")
 
-months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
+months = st.sidebar.slider("Lookback (months)", 1, 12, 6)
 
 # =============================
 # RUN
@@ -188,37 +178,33 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 if st.button("Search"):
 
-    entries = fetch_all(QUERIES, months)
+    entries = fetch_all(months)
 
     results = {}
-    seen_companies = set()
+    seen = set()
 
     for e in entries[:MAX_ARTICLES]:
 
         title = e.title.split(" - ")[0]
 
-        # 🔥 SPEED FILTER (huge improvement)
+        # fast filter
         if not any(k in title.lower() for k in KEYWORDS):
             continue
 
         text = title + ". " + fetch_text(e.link)
 
-        data = extract_with_openai(text)
+        data = extract(text)
 
         company = clean_company(data.get("company"))
         people = data.get("people", [])
 
-        # fallback for company only
         if not company:
-            data = fallback_extract(text)
-            company = clean_company(data.get("company"))
+            company = clean_company(fallback_company(text))
 
-        if not company:
+        if not company or company in seen:
             continue
 
-        if company in seen_companies:
-            continue
-        seen_companies.add(company)
+        seen.add(company)
 
         valid_people = []
 
@@ -229,11 +215,8 @@ if st.button("Search"):
             if is_real_person(name):
                 valid_people.append((name, role))
 
-        # limit to top 2 people max
-        valid_people = valid_people[:2]
-
         results[company] = {
-            "people": valid_people,
+            "people": valid_people[:2],
             "title": title,
             "link": e.link
         }
@@ -262,4 +245,4 @@ if st.button("Search"):
             st.divider()
 
     else:
-        st.warning("No entrepreneur activity found")
+        st.warning("No high-quality entrepreneur activity found")
