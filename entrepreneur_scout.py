@@ -18,8 +18,26 @@ STOPWORDS = {
 }
 
 INVALID_ENTITIES = {
-    "partners","capital","ventures","vc","fund","investors"
+    "partners","capital","ventures","vc","fund","investors",
+    "global","management","group","holdings","equity"
 }
+
+KNOWN_FUNDS = {
+    "Tiger Global","Sequoia Capital","Andreessen Horowitz",
+    "Accel","Benchmark","SoftBank","Kleiner Perkins"
+}
+
+ELITE_KEYWORDS = [
+    "ex-google","former google","google alumni",
+    "ex-stripe","former stripe",
+    "openai","deepmind","meta","facebook",
+    "apple","amazon","microsoft",
+    "serial entrepreneur","repeat founder"
+]
+
+# =============================
+# HELPERS
+# =============================
 
 def clean_company(name):
     if not name:
@@ -38,7 +56,13 @@ def is_valid_person(name):
     )
 
 def is_company_like(name):
+    if name in KNOWN_FUNDS:
+        return True
     return any(w in name.lower() for w in INVALID_ENTITIES)
+
+def has_elite_signal(text):
+    t = text.lower()
+    return any(k in t for k in ELITE_KEYWORDS)
 
 # =============================
 # COMPANY EXTRACTION
@@ -46,54 +70,32 @@ def is_company_like(name):
 
 def extract_company(text):
 
-    # startup Lifeforce
     m = re.search(r'(?:startup|company)\s+([A-Z][A-Za-z0-9&\-\.\']+)', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # Lifeforce, a startup
     m = re.search(r'([A-Z][A-Za-z0-9&\-\.\']+),?\s+(?:a|an)\s+(?:\w+\s)?startup', text)
     if m:
         c = clean_company(m.group(1))
         if c and not is_valid_person(c):
             return c
 
-    # fallback: first valid capitalized word
-    for word in text.split():
-        if word[0].isupper() and not is_valid_person(word):
-            c = clean_company(word)
+    for w in text.split():
+        if w[0].isupper() and not is_valid_person(w):
+            c = clean_company(w)
             if c:
                 return c
 
     return None
 
 # =============================
-# PERSON DISCOVERY
+# EXTRACTION
 # =============================
 
 def extract_people(text):
     return re.findall(r'([A-Z][a-z]+ [A-Z][a-z]+)', text)
-
-def score_person(text, person):
-    score = 0
-    t = text.lower()
-
-    if person.lower() in t:
-        score += 1
-    if "founded" in t:
-        score += 3
-    if "backed" in t or "invested" in t:
-        score += 2
-    if any(x in t for x in ["ex-google", "former google", "ex-stripe", "openai"]):
-        score += 5
-
-    return score
-
-# =============================
-# PATTERN EXTRACTION
-# =============================
 
 def extract_patterns(text):
 
@@ -117,10 +119,11 @@ def extract_patterns(text):
         if is_valid_person(p) and not is_company_like(p):
             results.append((p, company, "Investor"))
 
-    # led by
-    for p in re.findall(r'led by ([A-Z][a-z]+ [A-Z][a-z]+)', text):
-        if is_valid_person(p) and not is_company_like(p):
-            results.append((p, company, "Investor"))
+    # elite fallback (KEY UPGRADE)
+    if has_elite_signal(text):
+        for p in extract_people(text):
+            if is_valid_person(p):
+                results.append((p, company, "Founder"))
 
     return results
 
@@ -133,7 +136,7 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:500]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:600]
     except:
         return ""
 
@@ -171,95 +174,48 @@ months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
 if st.button("Search"):
 
-    # HIGH-SIGNAL QUERIES
     base_queries = [
-        "startup founded by entrepreneur",
-        "startup backed by celebrity",
-        "celebrity startup investment",
-        "founder launches startup",
-        "startup backed by founder",
-        "startup raises funding led by founder",
-        "co-founded startup",
-        "startup launched by entrepreneur",
+        "startup founded by",
+        "startup backed by",
+        "startup raises funding founder",
+        "ex Google founder startup",
+        "former Stripe founder startup",
+        "OpenAI founder startup",
+        "startup launched by founder"
     ]
 
-    # SEED ENTREPRENEURS
-    SEED_PEOPLE = [
-        "Bill Gates","Elon Musk","Sam Altman","Reid Hoffman",
-        "Peter Thiel","Marc Andreessen","Naval Ravikant",
-        "Serena Williams","Tony Robbins","Mark Cuban",
-        "Ashton Kutcher","Richard Branson"
-    ]
-
-    seed_queries = []
-    for p in SEED_PEOPLE:
-        seed_queries.append(f"{p} startup")
-        seed_queries.append(f"{p} backed startup")
-        seed_queries.append(f"{p} founded startup")
-
-    # INITIAL FETCH
-    entries = fetch_all(base_queries + seed_queries, months)
-
-    # =============================
-    # AUTO DISCOVERY
-    # =============================
-
-    person_scores = {}
-
-    for e in entries:
-        title = e.title.split(" - ")[0]
-        text = title + ". " + fetch_text(e.link)
-
-        for p in extract_people(text):
-            if not is_valid_person(p):
-                continue
-
-            s = score_person(text, p)
-            person_scores[p] = person_scores.get(p, 0) + s
-
-    top_people = [p for p, s in person_scores.items() if s >= 5][:20]
-
-    # SECOND PASS
-    extra_queries = []
-    for p in top_people:
-        extra_queries.append(f"{p} startup")
-        extra_queries.append(f"{p} founded startup")
-        extra_queries.append(f"{p} backed startup")
-
-    entries.extend(fetch_all(extra_queries, months))
-
-    # =============================
-    # FINAL EXTRACTION
-    # =============================
+    entries = fetch_all(base_queries, months)
 
     company_results = {}
 
     for e in entries[:MAX_ARTICLES]:
 
         title = e.title.split(" - ")[0]
-        text = title
-
-        if any(k in title.lower() for k in ["raised","founded","backed","funding","led","launched"]):
-            text += ". " + fetch_text(e.link)
+        text = title + ". " + fetch_text(e.link)
 
         events = extract_patterns(text)
 
-        for person, company, role in events:
+        valid_people = [
+            (p, r) for p, _, r in [(p, c, r) for p, c, r in events]
+            if is_valid_person(p) and not is_company_like(p)
+        ]
 
-            if not is_valid_person(person):
-                continue
+        if not valid_people:
+            continue
 
-            if is_company_like(person):
-                continue
+        company = extract_company(text)
+        if not company:
+            continue
 
-            if company not in company_results:
-                company_results[company] = {
-                    "people": set(),
-                    "title": title,
-                    "link": e.link
-                }
+        if company not in company_results:
+            company_results[company] = {
+                "people": set(),
+                "title": title,
+                "link": e.link
+            }
 
-            company_results[company]["people"].add((person, role))
+        for p, r in valid_people:
+            company_results[company]["people"].add((p, r))
 
     # =============================
     # OUTPUT
