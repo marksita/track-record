@@ -12,33 +12,31 @@ MAX_ARTICLES = 200
 # FILTERS
 # =============================
 
-INVALID_ENTITIES = {
-    "capital","ventures","vc","fund","investors",
-    "global","management","group","holdings","equity",
-    "angels","studios"
-}
-
 COMPANY_WORDS = {
-    "ai","labs","lab","systems","technologies",
+    "ai","ml","labs","lab","systems","technologies",
     "tech","intelligence","solutions","platform",
-    "robotics","fintech"
+    "robotics","fintech","capital","ventures",
+    "group","fund","studios"
 }
 
-BAD_SUFFIXES = {
-    "capital","ventures","studios","angels",
-    "partners","group","fund"
-}
-
-# NEW: nationality / descriptor words
-BAD_PREFIXES = {
-    "italian","french","german","british","european",
-    "american","indian","chinese","startup","fintech","ai"
+# NEW: block location / generic phrases
+GENERIC_WORDS = {
+    "south","north","east","west","downtown",
+    "innovation","social","global","digital"
 }
 
 KEYWORDS = [
     "founded","backed","raises","raised",
     "funding","launch","led"
 ]
+
+# NEW: small whitelist of common first names
+COMMON_FIRST_NAMES = {
+    "john","mike","sarah","david","alex","james",
+    "chris","daniel","emma","olivia","liam",
+    "noah","ava","isabella","ethan","lucas",
+    "tony","serena","bill","elon","mark"
+}
 
 # =============================
 # HELPERS
@@ -50,56 +48,58 @@ def is_valid_person(name):
     if len(parts) != 2:
         return False
 
-    # must be proper capitalized words
     if not all(p[0].isupper() for p in parts):
         return False
 
     if not all(p.isalpha() for p in parts):
         return False
 
-    # ❌ block company-like words
+    # ❌ block company words
     if any(p.lower() in COMPANY_WORDS for p in parts):
         return False
 
-    # ❌ block "Italian Fin" type
-    if parts[0].lower() in BAD_PREFIXES:
+    # ❌ block generic/location phrases
+    if any(p.lower() in GENERIC_WORDS for p in parts):
+        return False
+
+    # ✅ require human-like name
+    if parts[0].lower() not in COMMON_FIRST_NAMES:
         return False
 
     return True
 
 
-def is_bad_entity(name):
-    if any(w in name.lower() for w in INVALID_ENTITIES):
-        return True
-    if any(name.lower().endswith(s) for s in BAD_SUFFIXES):
-        return True
-    return False
-
 # =============================
-# COMPANY EXTRACTION (FIXED)
+# COMPANY EXTRACTION
 # =============================
 
 def extract_company(text):
 
-    # "startup Sibill"
-    m = re.search(r'startup\s+([A-Z][A-Za-z0-9&\-]+)', text)
-    if m:
-        return m.group(1)
-
-    # "Sibill raises"
+    # "AdPipe raises"
     m = re.search(r'([A-Z][A-Za-z0-9&\-]+)\s+(raises|raised|secures)', text)
     if m:
         return m.group(1)
 
-    # "Sibill, a startup"
+    # "startup X"
+    m = re.search(r'startup\s+([A-Z][A-Za-z0-9&\-]+)', text)
+    if m:
+        return m.group(1)
+
+    # "X, a startup"
     m = re.search(r'([A-Z][A-Za-z0-9&\-]+),?\s+(?:a|an)\s+startup', text)
+    if m:
+        return m.group(1)
+
+    # "launch X"
+    m = re.search(r'launch(?:es|ed)?\s+([A-Z][A-Za-z0-9&\-]+)', text)
     if m:
         return m.group(1)
 
     return None
 
+
 # =============================
-# PERSON EXTRACTION (FIXED)
+# PERSON EXTRACTION
 # =============================
 
 def extract_people(text):
@@ -108,19 +108,14 @@ def extract_people(text):
 
     people = []
     for c in candidates:
-
-        if not is_valid_person(c):
-            continue
-
-        if is_bad_entity(c):
-            continue
-
-        people.append(c)
+        if is_valid_person(c):
+            people.append(c)
 
     return list(set(people))
 
+
 # =============================
-# CORE EXTRACTION
+# EVENT EXTRACTION
 # =============================
 
 def extract_events(text):
@@ -142,18 +137,13 @@ def extract_events(text):
         if p in people:
             results.append((p, company, "Investor"))
 
-    # investor fallback
-    if not results:
-        for p in people:
-            if "backed" in text.lower() or "led" in text.lower():
-                results.append((p, company, "Investor"))
-
-    # founder fallback
+    # fallback: only if strong signal
     if not results and people:
         if any(k in text.lower() for k in KEYWORDS):
             results.append((people[0], company, "Founder"))
 
     return results
+
 
 # =============================
 # SCRAPER
@@ -164,9 +154,10 @@ def fetch_text(url):
     try:
         r = requests.get(url, timeout=4)
         soup = BeautifulSoup(r.text, "html.parser")
-        return " ".join(p.get_text() for p in soup.find_all("p"))[:500]
+        return " ".join(p.get_text() for p in soup.find_all("p"))[:400]
     except:
         return ""
+
 
 # =============================
 # FEEDS
@@ -177,6 +168,7 @@ def fetch_google(query, months):
     url = f"https://news.google.com/rss/search?q={q}+when:{months}m"
     return feedparser.parse(url).entries[:80]
 
+
 def fetch_all(queries, months):
     results = []
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -184,6 +176,7 @@ def fetch_all(queries, months):
         for f in futures:
             results.extend(f.result())
     return results
+
 
 # =============================
 # UI
@@ -196,6 +189,7 @@ st.markdown("Find when successful entrepreneurs start or invest in a new company
 
 months = st.sidebar.slider("Lookback (months)", 1, 12, 12)
 
+
 # =============================
 # RUN
 # =============================
@@ -207,8 +201,7 @@ if st.button("Search"):
         "startup backed by",
         "startup raises funding founder",
         "startup raises funding investor",
-        "startup backed by entrepreneur",
-        "startup raises funding led by"
+        "startup launched by founder"
     ]
 
     entries = fetch_all(queries, months)
